@@ -1,6 +1,10 @@
+
 /*********************************************************************
- *This is demo for ROS refering to xv_11_laser_driver.
+ * This is demo for ROS refering to xv_11_laser_driver.
+ * serial port version :
  rosrun bluesea bluesea_node _frame_id:=map _port:=/dev/ttyUSB0 _baud_rate:=230400 _firmware_version:=2
+ * UDP network version like this:
+ rosrun bluesea bluesea_node _frame_id:=map _type:=udp _dev_ip:=192.168.158.91 _firmware_version:=2
  *********************************************************************/
 
 #include <ros/ros.h>
@@ -30,8 +34,12 @@
 #include <sys/ioctl.h>
 #include <fcntl.h>
 #include <errno.h>
-//#include <linux/termios.h>
+#include <netinet/in.h> 
+#include <netinet/tcp.h>
+#include <sys/socket.h>
 
+//#include <linux/termios.h>
+//
 struct RawDataHdr
 {
 	unsigned short code;
@@ -111,6 +119,47 @@ int send_cmd(unsigned short cmd_id, int len, const void* cmd_body)
 	pcrc[0] = stm32crc((unsigned int*)(buffer + 0), len/4 + 2);
 
 	return write(g_port, buffer, len + sizeof(CmdHeader) + 4);
+}
+
+int udp_talk(int fd_udp, 
+		const char* dev_ip, int dev_port,
+	       	int cmd, int sn, 
+		int len, const char* snd_buf)
+{
+	char buffer[2048];
+	CmdHeader* hdr = (CmdHeader*)buffer;
+	hdr->sign = 0x484c;
+	hdr->cmd = cmd;
+	hdr->sn = sn;
+
+	len = ((len + 3) >> 2) * 4;
+
+	hdr->len = len;
+
+	memcpy(buffer + sizeof(CmdHeader), snd_buf, len);
+
+	int n = sizeof(CmdHeader);
+	unsigned int* pcrc = (unsigned int*)(buffer + sizeof(CmdHeader) + len);
+	pcrc[0] = stm32crc((unsigned int*)(buffer + 0), len/4 + 2);
+
+	sockaddr_in to;
+	to.sin_family = AF_INET;
+	to.sin_addr.s_addr = inet_addr(dev_ip);
+	to.sin_port = htons(dev_port);
+
+	int len2 = len + sizeof(CmdHeader) + 4;
+
+	sendto(fd_udp, buffer, len2, 0, (struct sockaddr*)&to, sizeof(struct sockaddr));
+
+#if 1
+	char s[3096];
+	for (int i = 0; i < len2; i++) 
+		sprintf(s + 3 * i, "%02x ", (unsigned char)buffer[i]);
+	printf("send to %s:%d 0x%04x sn[%d] L=%d : %s\n", 
+			dev_ip, dev_port, cmd, sn, len, s);
+#endif
+
+	return 0;
 }
 
 // 
@@ -364,27 +413,52 @@ int main(int argc, char **argv)
        	ros::NodeHandle n;
        	ros::NodeHandle priv_nh("~");
 
-	std::string port;
-       	int baud_rate;
+	std::string port, type, dev_ip;
+       	int baud_rate, udp_port;
        	std::string frame_id;
        	int firmware_number; 
 	
 	std_msgs::UInt16 rpms; 
 
+	priv_nh.param("type", type, std::string("uart"));
 	priv_nh.param("port", port, std::string("/dev/ttyUSB0"));
+	priv_nh.param("dev_ip", dev_ip, std::string("192.168.158.91"));
+	priv_nh.param("udp_port", udp_port, 5000);
        	priv_nh.param("baud_rate", baud_rate, 256000);
        	priv_nh.param("frame_id", frame_id, std::string("LH_laser"));
        	priv_nh.param("firmware_version", firmware_number, 2);
 
-#if 1
 	// open serial port
-	int fd = open_serial_port(port.c_str(), baud_rate);
-	if (fd < 0) {
-		ROS_ERROR("Open port error ");
-		return -1;
+	int fd_uart = -1, fd_udp = -1;
+	if (type == "udp") {
+		// open UDP port
+		fd_udp  = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+		sockaddr_in addr;
+		addr.sin_family = AF_INET;
+		addr.sin_port = htons(50112);
+		addr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+		int rt = ::bind(fd_udp, (struct sockaddr *)&addr, sizeof(addr));
+		if (rt != 0)
+		{
+			ROS_ERROR("bind port failed");
+			return -1;
+		}
+
+		// acknowlege device 
+		//rt = udp_talk(fd_udp, dev_ip.c_str(), udp_port, 0x4753, rand(), 0, NULL);
+
+		char cmd[12] = "LGCPSH";
+		rt = udp_talk(fd_udp, dev_ip.c_str(), udp_port, 0x0043, rand(), 6, cmd);
+	} 
+	if (type == "uart") {
+		fd_uart = open_serial_port(port.c_str(), baud_rate);
+		if (fd_uart < 0) {
+			ROS_ERROR("Open port error ");
+			return -1;
+		}
+		g_port = fd_uart;
 	}
-	g_port = fd;
-#endif
 
 	ros::Publisher laser_pub = n.advertise<sensor_msgs::LaserScan>("scan", 1500);
 	// ros::Publisher motor_pub = n.advertise<std_msgs::UInt16>("rpms",1500);
@@ -399,24 +473,62 @@ int main(int argc, char **argv)
 
 	memset(dat360, 0, sizeof(RawData)*10);
 
+	bool should_publish = false;
 	while (ros::ok()) 
 	{ 
 		fd_set fds;
 	       	FD_ZERO(&fds); 
-		FD_SET(fd, &fds); 
+
+		int fd_max = -1;
+		if (fd_uart > 0) 
+		{
+			FD_SET(fd_uart, &fds); 
+			if (fd_max < fd_uart) fd_max = fd_uart;
+		}
+
+		if (fd_udp > 0) 
+		{
+			FD_SET(fd_udp, &fds); 
+			if (fd_max < fd_udp) fd_max = fd_udp;
+		}
 		
 		struct timeval to = { 0, 2000 };
-	       	int ret = select(fd+1, &fds, NULL, NULL, &to); 
+	       	int ret = select(fd_max+1, &fds, NULL, NULL, &to); 
 		
 		if (ret < 0) {
-
 			ROS_ERROR("select error");
 			return -1;
 		}
 
-		if (FD_ISSET(fd, &fds)) 
+		if (fd_udp > 0 && FD_ISSET(fd_udp, &fds)) 
+		{ 
+			RawData dat;
+
+			sockaddr_in addr;
+			socklen_t sz = sizeof(addr);
+
+			int dw = recvfrom(fd_udp, (char*)&dat, sizeof(dat), 0, (struct sockaddr *)&addr, &sz);
+
+			if (dat.code == 0xface && dat.N * 2 + 8 == dw && (dat.angle % 360) == 0)
+			{
+				dat360[(dat.angle%3600)/360] = dat;
+				if (dat.angle == 3240) {
+					should_publish = true;
+				}
+			}
+			else {
+				printf("get udp %d bytes :", dw);
+				unsigned char* buf = (unsigned char*)&dat;
+				for (int i=0; i<dw || i<16; i++) {
+					printf("%02x ", buf[i]);
+				}
+				printf("\n");
+			}
+		}
+
+		if (fd_uart > 0 && FD_ISSET(fd_uart, &fds)) 
 		{
-			int nr = read(fd, buf+buf_len, BUF_SIZE - buf_len);
+			int nr = read(fd_uart, buf+buf_len, BUF_SIZE - buf_len);
 			if (nr <= 0) {
 				ROS_ERROR("read port %d error %d", buf_len, nr);
 				break;
@@ -425,7 +537,6 @@ int main(int argc, char **argv)
 			if (nr == 0) continue;
 
 			buf_len += nr;
-
 
 			int consume = 0; 
 			RawData dat;
@@ -436,45 +547,7 @@ int main(int argc, char **argv)
 
 				if (dat.angle == 3240)
 				{
-
-					int N = 0, n = 0;
-					for (int i=0; i<10; i++) {
-						N += dat360[i].N;
-						if (dat360[i].N > 0) n++;
-					}
-					if (n == 10) 
-					{
-						sensor_msgs::LaserScan msg; 
-					
-						msg.header.stamp = ros::Time::now();
-					       	msg.header.frame_id = frame_id;
-
-						msg.angle_min = 0; 
-						msg.angle_max = M_PI*2; 
-						msg.angle_increment = M_PI*2 / N;
-
-						double scan_time = 1/5.;
-					       	msg.scan_time = scan_time;
-					       	msg.time_increment = scan_time / N;
-
-						msg.range_min = 0.; 
-						msg.range_max = 100;//max_distance;//8.0; 
-						
-						msg.intensities.resize(N); 
-						msg.ranges.resize(N);
-
-						N = 0;
-						for (int j=0; j<10; j++) 
-						{
-							for (int i=0; i<dat360[j].N; i++) 
-							{
-								msg.ranges[N] = ( dat360[j].data[i] & 0x1FFF )/100.0 ; 
-								msg.intensities[N] = 1 + (float) (dat360[j].data[i] >> 13);
-								N++;
-						       	}
-						} 
-						laser_pub.publish(msg); 
-					}
+					should_publish = true;
 				}
 			}
 
@@ -487,6 +560,50 @@ int main(int argc, char **argv)
 				if (!is_pack) ROS_ERROR("drop %d bytes", consume);
 			}
 		}
+
+		if (should_publish) 
+		{
+			int N = 0, n = 0;
+			for (int i=0; i<10; i++) {
+				N += dat360[i].N;
+				if (dat360[i].N > 0) n++;
+			}
+			if (n == 10) 
+			{
+				sensor_msgs::LaserScan msg; 
+			
+				msg.header.stamp = ros::Time::now();
+				msg.header.frame_id = frame_id;
+
+				msg.angle_min = 0; 
+				msg.angle_max = M_PI*2; 
+				msg.angle_increment = M_PI*2 / N;
+
+				double scan_time = 1/10.;
+				msg.scan_time = scan_time;
+				msg.time_increment = scan_time / N;
+
+				msg.range_min = 0.; 
+				msg.range_max = 100;//max_distance;//8.0; 
+				
+				msg.intensities.resize(N); 
+				msg.ranges.resize(N);
+
+				N = 0;
+				for (int j=0; j<10; j++) 
+				{
+					for (int i=0; i<dat360[j].N; i++) 
+					{
+						msg.ranges[N] = ( dat360[j].data[i] & 0x1FFF )/100.0 ; 
+						msg.intensities[N] = 1 + (float) (dat360[j].data[i] >> 13);
+						N++;
+					}
+				} 
+				laser_pub.publish(msg); 
+			}
+			should_publish = false;
+		}
+
 		ros::spinOnce();
 	}
 
