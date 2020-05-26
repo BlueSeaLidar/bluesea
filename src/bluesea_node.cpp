@@ -2,17 +2,17 @@
 /*********************************************************************
  * This is demo for ROS refering to xv_11_laser_driver.
  * serial port version :
- rosrun bluesea bluesea_node _frame_id:=map _port:=/dev/ttyUSB0 _baud_rate:=230400 _firmware_version:=2
+ rosrun bluesea bluesea_node _frame_id:=map _port:=/dev/ttyUSB0 _baud_rate:=230400 _firmware_version:=2 _output_scan:=1 _output_cloud:=1
  * UDP network version like this:
- rosrun bluesea bluesea_node _frame_id:=map _type:=udp _dev_ip:=192.168.158.91 _firmware_version:=2
+ rosrun bluesea bluesea_node _frame_id:=map _type:=udp _dev_ip:=192.168.158.91 _firmware_version:=2 _output_scan:=1 _output_cloud:=1
  *********************************************************************/
 
 #include <ros/ros.h>
 #include <sensor_msgs/LaserScan.h>
+#include <sensor_msgs/PointCloud.h>
 #include <std_msgs/UInt16.h>
 #include <std_srvs/Empty.h>
 //#define ROS_ERROR printf
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -54,6 +54,9 @@ struct RawData
 	unsigned short angle;
 	unsigned short data[1000];
 };
+
+
+#define PI 3.1415926
 
 #define HDR_SIZE 6
 
@@ -415,6 +418,7 @@ int main(int argc, char **argv)
 
 	std::string port, type, dev_ip;
        	int baud_rate, udp_port;
+	int output_scan, output_cloud;
        	std::string frame_id;
        	int firmware_number; 
 	
@@ -423,6 +427,8 @@ int main(int argc, char **argv)
 	priv_nh.param("type", type, std::string("uart"));
 	priv_nh.param("port", port, std::string("/dev/ttyUSB0"));
 	priv_nh.param("dev_ip", dev_ip, std::string("192.168.158.91"));
+	priv_nh.param("output_scan", output_scan, 1);
+	priv_nh.param("output_cloud", output_cloud, 0);
 	priv_nh.param("udp_port", udp_port, 5000);
        	priv_nh.param("baud_rate", baud_rate, 256000);
        	priv_nh.param("frame_id", frame_id, std::string("LH_laser"));
@@ -460,7 +466,9 @@ int main(int argc, char **argv)
 		g_port = fd_uart;
 	}
 
-	ros::Publisher laser_pub = n.advertise<sensor_msgs::LaserScan>("scan", 1500);
+	ros::Publisher laser_pub = n.advertise<sensor_msgs::LaserScan>("scan", 50);
+	ros::Publisher cloud_pub = n.advertise<sensor_msgs::PointCloud>("cloud", 50);
+   
 	// ros::Publisher motor_pub = n.advertise<std_msgs::UInt16>("rpms",1500);
        
 	ros::ServiceServer stop_srv = n.advertiseService("stop_motor", stop_motor);
@@ -553,11 +561,22 @@ int main(int argc, char **argv)
 
 			if (consume > 0) 
 			{
+				if (!is_pack) {
+					FILE* fp = fopen("/tmp/bad.dat", "ab");
+					if (fp) {
+						fwrite(buf, 1, consume, fp);
+						fclose(fp);
+					}
+					ROS_ERROR("drop %d bytes: %02x %02x %02x %02x %02x %02x", 
+							consume,
+							buf[0], buf[1], buf[2],
+						       	buf[3], buf[4], buf[5]);
+				}
+
+
 				for (int i=consume; i<buf_len; i++) 
 					buf[i - consume] = buf[i];
 				buf_len -= consume; 
-
-				if (!is_pack) ROS_ERROR("drop %d bytes", consume);
 			}
 		}
 
@@ -568,7 +587,7 @@ int main(int argc, char **argv)
 				N += dat360[i].N;
 				if (dat360[i].N > 0) n++;
 			}
-			if (n == 10) 
+			if (n == 10 && output_scan != 0) 
 			{
 				sensor_msgs::LaserScan msg; 
 			
@@ -601,8 +620,35 @@ int main(int argc, char **argv)
 				} 
 				laser_pub.publish(msg); 
 			}
+			if (n == 10 && output_cloud != 0) 
+			{ 
+				sensor_msgs::PointCloud cloud; 
+				cloud.header.stamp = ros::Time::now();
+				cloud.header.frame_id = frame_id; 
+				cloud.points.resize(N);
+				cloud.channels.resize(1); 
+				cloud.channels[0].name = "intensities"; 
+				cloud.channels[0].values.resize(N);
+  
+				int idx = 0;
+				for (int j=0; j<10; j++) 
+				{
+					for (int i=0; i<dat360[j].N; i++) 
+					{
+						float r = (dat360[j].data[i] & 0x1FFF )/100.0 ; 
+						cloud.points[idx].x = cos(idx*PI*2/N) * r;
+						cloud.points[idx].y = sin(idx*PI*2/N) * r;
+						cloud.points[idx].z = 0;
+					       	cloud.channels[0].values[idx] = (float) (dat360[j].data[i] >> 13);
+						idx++;
+					}
+				} 
+				cloud_pub.publish(cloud);
+			}
+
 			should_publish = false;
 		}
+
 
 		ros::spinOnce();
 	}
