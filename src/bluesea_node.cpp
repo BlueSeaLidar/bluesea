@@ -246,16 +246,28 @@ int open_serial_port(const char* port, int baudrate)
 	return fd;
 }
 
+char g_uuid[32] = "";
 // translate lidar raw data to ROS laserscan message
 bool parse_data(int len, unsigned char* buf, RawData& dat, int& consume) 
 {
 	int idx = 0;
-	while (idx < len-128)
+	while (idx < len-18)
 	{
 		if (buf[idx] != 0xce || buf[idx+1] != 0xfa)
 		{
 			idx++;
 			continue;
+		}
+	
+		if (idx > 24) for (int i=0; i<idx-22; i++) 
+		{
+			// get product SN
+			if (memcmp(buf+i, "PRODUCT SN: ", 12) == 0)
+		       	{
+				memcpy(g_uuid, buf+i+12, 9);
+				g_uuid[9] = 0;
+				printf("found product SN : %s\n", g_uuid);
+			}
 		}
 
 		RawDataHdr hdr;
@@ -305,10 +317,12 @@ bool parse_data(int len, unsigned char* buf, RawData& dat, int& consume)
 		consume = idx;
 		return true;
 	}
+
 	if (idx > 1024) consume = idx/2;
 	return false;
 }
 
+#ifdef NEXT
 int parse_data(int len, unsigned char* buf, sensor_msgs::LaserScan& scan_msg, int& consume) 
 {
 	int idx = 0;
@@ -393,6 +407,7 @@ int parse_data(int len, unsigned char* buf, sensor_msgs::LaserScan& scan_msg, in
 	if (idx > 1024) consume = idx/2;
 	return 0;
 }
+#endif
 
 // service call back function
 bool stop_motor(std_srvs::Empty::Request &req, std_srvs::Empty::Response &res)
@@ -464,6 +479,10 @@ int main(int argc, char **argv)
 			return -1;
 		}
 		g_port = fd_uart;
+
+		//send UUID reading request 
+		char buf[] = "LUUIDH";
+		write(g_port, buf, strlen(buf));
 	}
 
 	ros::Publisher laser_pub = n.advertise<sensor_msgs::LaserScan>("scan", 50);
@@ -587,6 +606,7 @@ int main(int argc, char **argv)
 				N += dat360[i].N;
 				if (dat360[i].N > 0) n++;
 			}
+
 			if (n == 10 && output_scan != 0) 
 			{
 				sensor_msgs::LaserScan msg; 
@@ -620,6 +640,7 @@ int main(int argc, char **argv)
 				} 
 				laser_pub.publish(msg); 
 			}
+
 			if (n == 10 && output_cloud != 0) 
 			{ 
 				sensor_msgs::PointCloud cloud; 
@@ -636,8 +657,9 @@ int main(int argc, char **argv)
 					for (int i=0; i<dat360[j].N; i++) 
 					{
 						float r = (dat360[j].data[i] & 0x1FFF )/100.0 ; 
-						cloud.points[idx].x = cos(idx*PI*2/N) * r;
-						cloud.points[idx].y = sin(idx*PI*2/N) * r;
+						float a = j*PI/5 + i*PI/5/dat360[j].N;
+						cloud.points[idx].x = cos(a) * r;
+						cloud.points[idx].y = sin(a) * r;
 						cloud.points[idx].z = 0;
 					       	cloud.channels[0].values[idx] = (float) (dat360[j].data[i] >> 13);
 						idx++;
