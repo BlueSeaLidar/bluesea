@@ -441,7 +441,7 @@ int main(int argc, char **argv)
        	ros::NodeHandle priv_nh("~");
 
 	std::string port, type, dev_ip;
-       	int baud_rate, udp_port;
+       	int baud_rate, udp_port, mirror;
 	int output_scan, output_cloud;
        	std::string frame_id;
        	int firmware_number; 
@@ -457,6 +457,7 @@ int main(int argc, char **argv)
        	priv_nh.param("baud_rate", baud_rate, 256000);
        	priv_nh.param("frame_id", frame_id, std::string("LH_laser"));
        	priv_nh.param("firmware_version", firmware_number, 2);
+       	priv_nh.param("mirror", mirror, 0);
 
 	// open serial port
 	int fd_uart = -1, fd_udp = -1;
@@ -624,7 +625,7 @@ int main(int argc, char **argv)
 				msg.header.frame_id = frame_id;
 
 				msg.angle_min = 0; 
-				msg.angle_max = M_PI*2; 
+				msg.angle_max = M_PI*2*(N-1)/N; 
 				msg.angle_increment = M_PI*2 / N;
 
 				double scan_time = 1/10.;
@@ -638,7 +639,7 @@ int main(int argc, char **argv)
 				msg.ranges.resize(N);
 
 				N = 0;
-				for (int j=0; j<10; j++) 
+				if (mirror == 0) for (int j=0; j<10; j++) 
 				{
 					for (int i=0; i<dat360[j].N; i++) 
 					{
@@ -647,6 +648,21 @@ int main(int argc, char **argv)
 						N++;
 					}
 				} 
+				else for (int j=0; j<10; j++) 
+				{
+					int idx[10] = { 4, 3, 2, 1, 0, 9, 8, 7, 6, 5 };
+					int id = idx[j];
+					int cnt = dat360[ id ].N;
+					for (int i=0; i<cnt; i++) 
+					{
+						msg.ranges[N] = 
+							( dat360[id].data[cnt-1-i] & 0x1FFF )/100.0 ; 
+						msg.intensities[N] = 
+							1 + (float) (dat360[id].data[cnt-1-i] >> 13);
+						N++;
+					}
+				}
+
 				laser_pub.publish(msg); 
 			}
 
