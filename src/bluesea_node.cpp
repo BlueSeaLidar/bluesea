@@ -38,6 +38,8 @@
 #include <netinet/tcp.h>
 #include <sys/socket.h>
 
+extern "C" int change_baud(int fd, int baud);
+
 //#include <linux/termios.h>
 //
 struct RawDataHdr
@@ -188,8 +190,7 @@ int open_serial_port(const char* port, int baudrate)
 
 	/* set speed */
 	int speed = B230400;
-	if (baudrate == 115200)
-		speed = B115200;
+	//if (baudrate == 115200) speed = B115200;
 
 	ret = cfsetispeed(&attrs, speed);//[baudrate]);  
 	ret |= cfsetospeed(&attrs, speed);//[baudrate]);
@@ -243,6 +244,14 @@ int open_serial_port(const char* port, int baudrate)
 	       	ROS_ERROR("tcsetattr err");
 	       	return -1;
 	}
+
+	if ( change_baud(fd, baudrate) )
+	{
+		close(fd);
+	       	ROS_ERROR("fail to set baudrate %d", baudrate);
+	       	return -1;
+	}
+
 	return fd;
 }
 
