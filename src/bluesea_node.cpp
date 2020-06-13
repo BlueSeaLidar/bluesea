@@ -441,7 +441,8 @@ int main(int argc, char **argv)
        	ros::NodeHandle priv_nh("~");
 
 	std::string port, type, dev_ip;
-       	int baud_rate, udp_port, mirror;
+       	int baud_rate, udp_port, mirror, from_zero;
+	int angle_patch;
 	int output_scan, output_cloud;
        	std::string frame_id;
        	int firmware_number; 
@@ -458,6 +459,8 @@ int main(int argc, char **argv)
        	priv_nh.param("frame_id", frame_id, std::string("LH_laser"));
        	priv_nh.param("firmware_version", firmware_number, 2);
        	priv_nh.param("mirror", mirror, 0);
+       	priv_nh.param("from_zero", from_zero, 1);
+       	priv_nh.param("angle_patch", angle_patch, 1);
 
 	// open serial port
 	int fd_uart = -1, fd_udp = -1;
@@ -609,12 +612,58 @@ int main(int argc, char **argv)
 			}
 		}
 
-		if (should_publish) 
+		if (should_publish)
 		{
 			int N = 0, n = 0;
 			for (int i=0; i<10; i++) {
 				N += dat360[i].N;
 				if (dat360[i].N > 0) n++;
+			}
+
+			if (n == 10 && output_cloud != 0) 
+			{ 
+				sensor_msgs::PointCloud cloud; 
+				cloud.header.stamp = ros::Time::now();
+				cloud.header.frame_id = frame_id; 
+				cloud.points.resize(N);
+				cloud.channels.resize(1); 
+				cloud.channels[0].name = "intensities"; 
+				cloud.channels[0].values.resize(N);
+  
+				int idx = 0;
+				for (int j=0; j<10; j++) 
+				{
+					for (int i=0; i<dat360[j].N; i++) 
+					{
+						float r = (dat360[j].data[i] & 0x1FFF )/100.0 ; 
+						float a = j*PI/5 + i*PI/5/dat360[j].N;
+						cloud.points[idx].x = cos(a) * r;
+						cloud.points[idx].y = sin(a) * r;
+						cloud.points[idx].z = 0;
+					       	cloud.channels[0].values[idx] = (float) (dat360[j].data[i] >> 13);
+						idx++;
+					}
+				} 
+				cloud_pub.publish(cloud);
+			}
+			if (n == 10 && angle_patch != 0) 
+			{
+				int mx = 0;
+				for (int i=0; i<10; i++) 
+				{
+					if (mx < dat360[i].N) mx = dat360[i].N;
+				}
+				       	       
+				for (int i=0; i<10; i++) 
+				{
+					for (int j=dat360[i].N; j<mx; j++) 
+					{
+						dat360[i].data[j] = 0;
+						//printf("patch [%d] %d\n", i, j);
+					}
+					dat360[i].N = mx;
+				}
+				N = mx * 10;
 			}
 
 			if (n == 10 && output_scan != 0) 
@@ -624,8 +673,14 @@ int main(int argc, char **argv)
 				msg.header.stamp = ros::Time::now();
 				msg.header.frame_id = frame_id;
 
-				msg.angle_min = 0; 
-				msg.angle_max = M_PI*2*(N-1)/N; 
+				if (from_zero == 0) {
+					msg.angle_min = 0; 
+					msg.angle_max = M_PI*2*(N-1)/N; 
+				}
+				else {
+					msg.angle_min = -M_PI;
+					msg.angle_max = M_PI - M_PI*2/N;
+				}
 				msg.angle_increment = M_PI*2 / N;
 
 				double scan_time = 1/10.;
@@ -666,33 +721,7 @@ int main(int argc, char **argv)
 				laser_pub.publish(msg); 
 			}
 
-			if (n == 10 && output_cloud != 0) 
-			{ 
-				sensor_msgs::PointCloud cloud; 
-				cloud.header.stamp = ros::Time::now();
-				cloud.header.frame_id = frame_id; 
-				cloud.points.resize(N);
-				cloud.channels.resize(1); 
-				cloud.channels[0].name = "intensities"; 
-				cloud.channels[0].values.resize(N);
-  
-				int idx = 0;
-				for (int j=0; j<10; j++) 
-				{
-					for (int i=0; i<dat360[j].N; i++) 
-					{
-						float r = (dat360[j].data[i] & 0x1FFF )/100.0 ; 
-						float a = j*PI/5 + i*PI/5/dat360[j].N;
-						cloud.points[idx].x = cos(a) * r;
-						cloud.points[idx].y = sin(a) * r;
-						cloud.points[idx].z = 0;
-					       	cloud.channels[0].values[idx] = (float) (dat360[j].data[i] >> 13);
-						idx++;
-					}
-				} 
-				cloud_pub.publish(cloud);
-			}
-
+			
 			should_publish = false;
 		}
 
