@@ -459,7 +459,7 @@ int main(int argc, char **argv)
        	priv_nh.param("frame_id", frame_id, std::string("LH_laser"));
        	priv_nh.param("firmware_version", firmware_number, 2);
        	priv_nh.param("mirror", mirror, 0);
-       	priv_nh.param("from_zero", from_zero, 1);
+       	priv_nh.param("from_zero", from_zero, 0);
        	priv_nh.param("angle_patch", angle_patch, 1);
 
 	// open serial port
@@ -703,8 +703,10 @@ int main(int argc, char **argv)
 						N++;
 					}
 				} 
-				else for (int j=0; j<10; j++) 
+				else for (int jj=0; jj<10; jj++) 
 				{
+					int j = from_zero ? jj : ((jj+5) % 10);
+					
 					int idx[10] = { 4, 3, 2, 1, 0, 9, 8, 7, 6, 5 };
 					int id = idx[j];
 					int cnt = dat360[ id ].N;
