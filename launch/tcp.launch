@@ -1,0 +1,19 @@
+<launch>
+ <group ns="lidar1">
+  <node name="lidar01" pkg="bluesea" type="bluesea_node" output="screen" >
+    <param name="port" value="/dev/ttyUSB1" />
+    <param name="type" value="tcp" />
+    <param name="dev_ip" value="192.168.1.202" />
+    <param name="tcp_port" value="5000" />
+    <param name="frame_id" value="map" />
+    <param name="baud_rate" value="384000" />
+    <param name="output_scan" value="1" />
+    <param name="output_cloud" value="1"/>
+    <param name="mirror" value="1"/>
+    <param name="from_zero" value="1"/>
+    <param name="angle_patch" value="1"/>
+    <param name="unit_is_mm" value="1"/>
+    <param name="with_confidence" value="1"/>
+  </node>
+ </group>
+</launch>
