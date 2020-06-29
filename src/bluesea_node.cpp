@@ -258,7 +258,7 @@ int open_serial_port(const char* port, int baudrate)
 
 char g_uuid[32] = "";
 // translate lidar raw data to ROS laserscan message
-bool parse_data_3(int len, unsigned char* buf, RawData& dat, int& consume) 
+bool parse_data_3(int len, unsigned char* buf, RawData& dat, int& consume, int with_chk) 
 {
 	int idx = 0;
 	while (idx < len-18)
@@ -324,7 +324,7 @@ bool parse_data_3(int len, unsigned char* buf, RawData& dat, int& consume)
 
 		memcpy(&chk, pdat, 2);
 
-		if (chk != sum) 
+		if (with_chk != 0 && chk != sum) 
 		{
 			ROS_ERROR("chksum error");
 			consume = idx + HDR_SIZE + 3*hdr.N + 2;
@@ -344,7 +344,7 @@ bool parse_data_3(int len, unsigned char* buf, RawData& dat, int& consume)
 	return false;
 }
 
-bool parse_data(int len, unsigned char* buf, RawData& dat, int is_mm, int with_conf, int& consume) 
+bool parse_data(int len, unsigned char* buf, RawData& dat, int is_mm, int with_conf, int& consume, int with_chk) 
 {
 	int idx = 0;
 	while (idx < len-180)
@@ -415,7 +415,7 @@ bool parse_data(int len, unsigned char* buf, RawData& dat, int is_mm, int with_c
 		}
 		memcpy(&chk, buf+idx+HDR_SIZE+hdr.N*2, 2);
 
-		if (chk != sum) 
+		if (with_chk != 0 && chk != sum) 
 		{
 			ROS_ERROR("chksum error");
 			consume = idx + HDR_SIZE + 2*hdr.N + 2;
@@ -589,6 +589,7 @@ int main(int argc, char **argv)
 	int output_scan, output_cloud;
        	std::string frame_id;
        	int firmware_number; 
+	int with_chk;
 	
 	std_msgs::UInt16 rpms; 
 
@@ -607,6 +608,7 @@ int main(int argc, char **argv)
        	priv_nh.param("angle_patch", angle_patch, 1);
        	priv_nh.param("unit_is_mm", unit_is_mm, 1);
        	priv_nh.param("with_confidence", with_confidence, 1);
+       	priv_nh.param("with_checksum", with_chk, 1);
 
 	// open serial port
 	int fd_uart = -1, fd_udp = -1, fd_tcp = -1;
@@ -818,10 +820,11 @@ int main(int argc, char **argv)
 			RawData dat;
 			bool is_pack;
 			if (unit_is_mm && with_confidence)
-				is_pack = parse_data_3(buf_len, buf, dat, consume);
+				is_pack = parse_data_3(buf_len, buf, dat, consume, with_chk);
 			else
 				is_pack = parse_data(buf_len, buf, dat, 
-						unit_is_mm, with_confidence, consume);
+						unit_is_mm, with_confidence, consume,
+						with_chk);
 			if (is_pack)
 			{
 				dat360[(dat.angle%3600)/360] = dat;
