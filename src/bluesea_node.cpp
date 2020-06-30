@@ -406,6 +406,7 @@ bool parse_data(int len, unsigned char* buf, RawData& dat, int is_mm, int with_c
 			{
 				dat.confidence[i] = val >> 13;
 			       	dat.distance[i] = val & 0x1fff;
+				if (is_mm == 0) dat.distance[i] *= 10;
 			} else {
 				dat.confidence[i] = is_mm ? val : val*10;
 				dat.confidence[i] = 0;
