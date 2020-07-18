@@ -326,7 +326,7 @@ bool parse_data_3(int len, unsigned char* buf, RawData& dat, int& consume, int w
 
 		if (with_chk != 0 && chk != sum) 
 		{
-			ROS_ERROR("chksum error");
+			ROS_ERROR("chksum3 error");
 			consume = idx + HDR_SIZE + 3*hdr.N + 2;
 			return 0;
 		}
@@ -425,7 +425,6 @@ bool parse_data(int len, unsigned char* buf, RawData& dat, int is_mm, int with_c
 
 		memcpy(&dat, &hdr, HDR_SIZE);
 		// memcpy(dat.data, buf+idx+HDR_SIZE, 2*hdr.N);
-		//printf("%d+%d, ", hdr.angle, hdr.N);
 
 		idx += HDR_SIZE + 2*hdr.N + 2;
 		consume = idx;
@@ -435,6 +434,43 @@ bool parse_data(int len, unsigned char* buf, RawData& dat, int is_mm, int with_c
 	if (idx > 1024) consume = idx/2;
 	return false;
 }
+
+int try_serial_port_384000(const char* port) 
+{
+	int fd = open_serial_port(port, 384000);
+	if (fd < 0) {
+		return -1;
+	}
+	
+	unsigned char* buf = new unsigned char[4096];
+
+	int nr = 0;
+	time_t t = time(NULL);
+	while (nr < 4096) 
+	{
+		int n = read(fd, buf+nr, 4096-nr);
+		if (n > 0) nr += n;
+		if (time(NULL) > t+1) break;
+	}
+	close(fd);
+
+	int fnd = -1;
+	if (nr == 4096) 
+	{
+		RawData dat;
+		int consume;
+
+		if (parse_data_3(nr, buf, dat, consume, 0) ) 
+		{
+			fnd = 0;
+		}
+	}
+	delete buf;
+	return fnd;
+}
+
+
+
 
 #if 0//def NEXT
 int parse_data(int len, unsigned char* buf, sensor_msgs::LaserScan& scan_msg, int& consume) 
@@ -637,7 +673,26 @@ int main(int argc, char **argv)
 
 	} 
 	else if (type == "uart") {
+
+		if (baud_rate == -77)
+		{
+			if ( try_serial_port_384000(port.c_str()) == 0)
+			{
+				baud_rate = 384000; 
+				unit_is_mm = 1; 
+				with_confidence = 1;
+				printf("is 384000\n");
+			} else
+			{
+				baud_rate = 234000; 
+				unit_is_mm = 0; 
+				with_confidence = 0;
+				printf("is 234000\n");
+			}
+		}
+
 		fd_uart = open_serial_port(port.c_str(), baud_rate);
+
 		if (fd_uart < 0) {
 			ROS_ERROR("Open port error ");
 			return -1;
