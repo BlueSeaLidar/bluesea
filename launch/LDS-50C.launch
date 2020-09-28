@@ -5,7 +5,7 @@
     <param name="port" value="/dev/ttyUSB0" />
     <param name="frame_id" value="map" />
     <param name="baud_rate" value="500000" />
-    <param name="output_360" value="0" />
+    <param name="output_360" value="1" />
     <param name="output_scan" value="1" />
     <param name="output_cloud" value="0"/>
     <param name="mirror" value="1"/>
