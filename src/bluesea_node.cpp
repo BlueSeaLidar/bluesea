@@ -1,8 +1,10 @@
 
 /*********************************************************************
  * This is demo for ROS refering to xv_11_laser_driver.
- * serial port version :
- rosrun bluesea bluesea_node _frame_id:=map _port:=/dev/ttyUSB0 _baud_rate:=230400 _firmware_version:=2 _output_scan:=1 _output_cloud:=1 _unit_is_mm:=1 _with_confidence:=1
+ * serial port version  LDS-25: 
+ rosrun bluesea bluesea_node _frame_id:=map _port:=/dev/ttyUSB0 _baud_rate:=230400 _firmware_version:=2 _output_scan:=1 _output_cloud:=0 _unit_is_mm:=0 _with_confidence:=0
+ * serial port version  LDS-50: 
+ rosrun bluesea bluesea_node _frame_id:=map _port:=/dev/ttyUSB0 _baud_rate:=500000 _firmware_version:=2 _output_scan:=1 _output_cloud:=0 _unit_is_mm:=1 _with_confidence:=1
  * UDP network version like this:
  rosrun bluesea bluesea_node _frame_id:=map _type:=udp _dev_ip:=192.168.158.91 _firmware_version:=2 _output_scan:=1 _output_cloud:=1
  *********************************************************************/
@@ -618,35 +620,61 @@ int main(int argc, char **argv)
        	ros::NodeHandle n;
        	ros::NodeHandle priv_nh("~");
 
-	std::string port, type, dev_ip;
-       	int baud_rate, udp_port, tcp_port;
-	int mirror, from_zero;
-	int unit_is_mm, with_confidence;
-	int angle_patch;
-	int output_scan, output_cloud;
-       	std::string frame_id;
-       	int firmware_number; 
-	int with_chk;
 	
 	std_msgs::UInt16 rpms; 
 
-	priv_nh.param("type", type, std::string("uart"));
+	// LiDAR comm type, could be "uart" or "udp"
+	std::string type;
+	priv_nh.param("type", type, std::string("uart")); 
+
+	// dump raw data for debug
+	std::string dump_path;
+	priv_nh.param("dump", dump_path, std::string("")); 
+
+	FILE* fp_dump = NULL;
+	if (!dump_path.empty())
+		fp_dump = fopen(dump_path.c_str(), "wb");
+
+	//////////////////////////////////////////////////////////////
+	// for serial port comm
+	std::string port;
+       	int baud_rate;
 	priv_nh.param("port", port, std::string("/dev/ttyUSB0"));
+       	priv_nh.param("baud_rate", baud_rate, 256000);
+
+	//////////////////////////////////////////////////////////////
+	// for network comm
+	std::string dev_ip;
+	int udp_port, tcp_port;
 	priv_nh.param("dev_ip", dev_ip, std::string("192.168.158.91"));
-	priv_nh.param("output_scan", output_scan, 1);
-	priv_nh.param("output_cloud", output_cloud, 0);
 	priv_nh.param("udp_port", udp_port, 5000);
 	priv_nh.param("tcp_port", tcp_port, 5000);
-       	priv_nh.param("baud_rate", baud_rate, 256000);
-       	priv_nh.param("frame_id", frame_id, std::string("LH_laser"));
-       	priv_nh.param("firmware_version", firmware_number, 2);
-       	priv_nh.param("mirror", mirror, 0);
-       	priv_nh.param("from_zero", from_zero, 0);
-       	priv_nh.param("angle_patch", angle_patch, 1);
-       	priv_nh.param("unit_is_mm", unit_is_mm, 1);
-       	priv_nh.param("with_confidence", with_confidence, 1);
-       	priv_nh.param("with_checksum", with_chk, 1);
 
+	// raw data format
+	int unit_is_mm, with_confidence, with_chk;
+	priv_nh.param("unit_is_mm", unit_is_mm, 1); // 0 : distance is CM, 1: MM
+       	priv_nh.param("with_confidence", with_confidence, 1); // 
+       	priv_nh.param("with_checksum", with_chk, 1); // 1 : enable packet checksum
+
+	// data output
+	int output_scan, output_cloud, output_360;
+	priv_nh.param("output_scan", output_scan, 1); // 1: enable output angle+distance mode, 0: disable
+	priv_nh.param("output_cloud", output_cloud, 0); // 1: enable output xyz format, 0 : disable
+	priv_nh.param("output_360", output_360, 1); // 1: packet data of 360 degree (multiple RawData), publish once
+							// 0: publish every RawData (36 degree)
+
+	// frame information
+       	std::string frame_id;
+       	int firmware_number; 
+       	priv_nh.param("frame_id", frame_id, std::string("LH_laser")); // could be used for rviz
+       	priv_nh.param("firmware_version", firmware_number, 2);
+
+	// output data format
+	int mirror, from_zero, angle_patch;
+       	priv_nh.param("mirror", mirror, 0); // 0: clockwise, 1: counterclockwise
+       	priv_nh.param("from_zero", from_zero, 0); // 1: angle range [0 - 360), 0: angle range [-180, 180)
+       	priv_nh.param("angle_patch", angle_patch, 1); // make points number of every fans to unique
+       	
 	// open serial port
 	int fd_uart = -1, fd_udp = -1, fd_tcp = -1;
 
@@ -747,6 +775,7 @@ int main(int argc, char **argv)
 	memset(dat360, 0, sizeof(RawData)*10);
 
 	bool should_publish = false;
+
 	while (ros::ok()) 
 	{ 
 		if (type == "tcp" && fd_tcp < 0) 
@@ -870,6 +899,10 @@ int main(int argc, char **argv)
 
 		if (new_data > 0)
 		{
+			if (fp_dump != NULL) {
+				fwrite(buf+buf_len, 1, new_data, fp_dump);
+				fflush(fp_dump);
+			}
 			buf_len += new_data;
 
 			int consume = 0; 
@@ -885,9 +918,38 @@ int main(int argc, char **argv)
 			{
 				dat360[(dat.angle%3600)/360] = dat;
 
-				if (dat.angle == 3240)
+				if (output_360 != 0) 
 				{
-					should_publish = true;
+					// wait for 360 degree 
+				       	if (dat.angle == 3240) should_publish = true;
+				} 
+				else 
+				{ 
+					// publish immediately
+					sensor_msgs::LaserScan msg; 
+					msg.header.stamp = ros::Time::now();
+					msg.header.frame_id = frame_id;
+
+					msg.angle_min = dat.angle * M_PI/1800; 
+					msg.angle_max = (dat.angle+360) * M_PI/1800; 
+					msg.angle_increment = M_PI / 5 / dat.N;
+
+					double scan_time = 1/100.;
+					msg.scan_time = scan_time;
+					msg.time_increment = scan_time / dat.N;
+
+					msg.range_min = 0.; 
+					msg.range_max = 100;//max_distance;//8.0; 
+					
+					msg.intensities.resize(dat.N); 
+					msg.ranges.resize(dat.N);
+
+					for (int j=0; j<dat.N; j++) 
+					{
+						msg.ranges[j] = dat.distance[j]/1000.0 ; 
+						msg.intensities[j] = dat.confidence[j];
+					} 
+					laser_pub.publish(msg); 
 				}
 			}
 
