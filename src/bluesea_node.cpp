@@ -42,6 +42,8 @@
 
 extern "C" int change_baud(int fd, int baud);
 
+
+
 //#include <linux/termios.h>
 //
 struct RawDataHdr
@@ -76,8 +78,15 @@ struct CmdHeader
 };
 
 // serial port handle
-int g_port = -1;
+int g_uart_port = -1;
 
+// UDP socket
+int g_udp_socket = -1;
+
+// parameters for network comm
+std::string dev_ip;
+int udp_port, tcp_port;
+	
 // CRC32
 unsigned int stm32crc(unsigned int *ptr, unsigned int len)
 {
@@ -108,8 +117,8 @@ unsigned int stm32crc(unsigned int *ptr, unsigned int len)
 	return crc32;
 }
 
-// send command to lidar serial port
-int send_cmd(unsigned short cmd_id, int len, const void* cmd_body)
+// send pacecat command to lidar serial port
+int send_cmd_uart(int fd_uart, unsigned short cmd_id, int len, const void* cmd_body)
 {
 	char buffer[2048] = {0};
 	CmdHeader* hdr = (CmdHeader*)buffer;
@@ -126,11 +135,11 @@ int send_cmd(unsigned short cmd_id, int len, const void* cmd_body)
 	unsigned int* pcrc = (unsigned int*)(buffer + sizeof(CmdHeader) + len);
 	pcrc[0] = stm32crc((unsigned int*)(buffer + 0), len/4 + 2);
 
-	return write(g_port, buffer, len + sizeof(CmdHeader) + 4);
+	return write(fd_uart, buffer, len + sizeof(CmdHeader) + 4);
 }
 
-int udp_talk(int fd_udp, 
-		const char* dev_ip, int dev_port,
+// 
+int send_cmd_udp(int fd_udp, const char* dev_ip, int dev_port,
 	       	int cmd, int sn, 
 		int len, const char* snd_buf)
 {
@@ -159,13 +168,11 @@ int udp_talk(int fd_udp,
 
 	sendto(fd_udp, buffer, len2, 0, (struct sockaddr*)&to, sizeof(struct sockaddr));
 
-#if 1
 	char s[3096];
 	for (int i = 0; i < len2; i++) 
 		sprintf(s + 3 * i, "%02x ", (unsigned char)buffer[i]);
-	printf("send to %s:%d 0x%04x sn[%d] L=%d : %s\n", 
+	ROS_INFO("send to %s:%d 0x%04x sn[%d] L=%d : %s", 
 			dev_ip, dev_port, cmd, sn, len, s);
-#endif
 
 	return 0;
 }
@@ -258,7 +265,6 @@ int open_serial_port(const char* port, int baudrate)
 	return fd;
 }
 
-char g_uuid[32] = "";
 // translate lidar raw data to ROS laserscan message
 bool parse_data_3(int len, unsigned char* buf, RawData& dat, int& consume, int with_chk) 
 {
@@ -275,30 +281,19 @@ bool parse_data_3(int len, unsigned char* buf, RawData& dat, int& consume, int w
 			continue;
 		}
 	
-		if (idx > 24) for (int i=0; i<idx-22; i++) 
-		{
-			// get product SN
-			if (memcmp(buf+i, "PRODUCT SN: ", 12) == 0)
-		       	{
-				memcpy(g_uuid, buf+i+12, 9);
-				g_uuid[9] = 0;
-				printf("found product SN : %s\n", g_uuid);
-			}
-		}
-
 		RawDataHdr hdr;
 		memcpy(&hdr, buf+idx, HDR_SIZE);
 
 		if ((hdr.angle % 360) != 0) 
 		{
-			ROS_ERROR("bad angle %d\n", hdr.angle);
+			ROS_ERROR("bad angle %d", hdr.angle);
 			idx += 2;
 			continue; 
 		}
 
 		if (hdr.N > 300 || hdr.N < 30) 
 		{
-			ROS_ERROR("points number %d seem not correct\n", hdr.N);
+			ROS_ERROR("points number %d seem not correct", hdr.N);
 			idx += 2;
 			continue;
 		}
@@ -361,30 +356,19 @@ bool parse_data(int len, unsigned char* buf, RawData& dat, int is_mm, int with_c
 			continue;
 		}
 			
-		if (idx > 24) for (int i=0; i<idx-22; i++) 
-		{
-			// get product SN
-			if (memcmp(buf+i, "PRODUCT SN: ", 12) == 0)
-		       	{
-				memcpy(g_uuid, buf+i+12, 9);
-				g_uuid[9] = 0;
-				printf("found product SN : %s\n", g_uuid);
-			}
-		}
-
 		RawDataHdr hdr;
 		memcpy(&hdr, buf+idx, HDR_SIZE);
 
 		if ((hdr.angle % 360) != 0) 
 		{
-			ROS_ERROR("bad angle %d\n", hdr.angle);
+			ROS_ERROR("bad angle %d", hdr.angle);
 			idx += 2;
 			continue; 
 		}
 
 		if (hdr.N > 300 || hdr.N < 30) 
 		{
-			ROS_ERROR("points number %d seem not correct\n", hdr.N);
+			ROS_ERROR("points number %d seem not correct", hdr.N);
 			idx += 2;
 			continue;
 		}
@@ -437,9 +421,9 @@ bool parse_data(int len, unsigned char* buf, RawData& dat, int is_mm, int with_c
 	return false;
 }
 
-int try_serial_port_384000(const char* port) 
+int try_serial_port(const char* port, int baud_rate) 
 {
-	int fd = open_serial_port(port, 384000);
+	int fd = open_serial_port(port, baud_rate);
 	if (fd < 0) {
 		return -1;
 	}
@@ -462,10 +446,11 @@ int try_serial_port_384000(const char* port)
 		RawData dat;
 		int consume;
 
-		if (parse_data_3(nr, buf, dat, consume, 0) ) 
-		{
-			fnd = 0;
-		}
+		if (parse_data_3(nr, buf, dat, consume, 1) ) fnd = 0;
+		if (parse_data(nr, buf, dat, 0, 0, consume, 1) ) fnd = 0;
+		if (parse_data(nr, buf, dat, 0, 1, consume, 1) ) fnd = 0;
+		if (parse_data(nr, buf, dat, 1, 0, consume, 1) ) fnd = 0;
+		if (parse_data(nr, buf, dat, 1, 1, consume, 1) ) fnd = 0;
 	}
 	delete buf;
 	return fnd;
@@ -564,33 +549,59 @@ int parse_data(int len, unsigned char* buf, sensor_msgs::LaserScan& scan_msg, in
 // service call back function
 bool stop_motor(std_srvs::Empty::Request &req, std_srvs::Empty::Response &res)
 {
-	send_cmd(0x0043, 6, "LSTOPH");
-	ROS_INFO("Stop motor");
-       	return true;
+	char cmd[] = "LSTOPH";
+	if ( g_uart_port != -1) {
+		write(g_uart_port, cmd, 6);
+		return true;
+	}
+
+	if (g_udp_socket != -1) 
+	{
+		send_cmd_udp(g_udp_socket, dev_ip.c_str(), udp_port, 
+				0x0043, rand(), 6, cmd);
+		ROS_INFO("Stop motor");
+		return true;
+	}
+	return false;
 }
 
 // service call back function
 bool start_motor(std_srvs::Empty::Request &req, std_srvs::Empty::Response &res)
 {
-	send_cmd(0x0043, 6, "LSTARH");
-	ROS_INFO("Start motor");
-       	return true;
+	char cmd[] = "LSTARH";
+	if ( g_uart_port != -1) {
+		write(g_uart_port, cmd, 6);
+		return true;
+	}
+
+	if (g_udp_socket != -1) 
+	{
+		send_cmd_udp(g_udp_socket, dev_ip.c_str(), udp_port, 
+				0x0043, rand(), 6, cmd);
+		ROS_INFO("Start motor");
+		return true;
+	}
+
+	return false;
 }
 
 int quirk_talk(int fd, int n, const char* cmd, 
 		int nhdr, const char* hdr_str, 
 		int nfetch, char* fetch)
 {
-	printf("send command : %s\n", cmd);
+	ROS_INFO("send command : %s", cmd);
 	write(fd, cmd, n);
 			
 	char buf[1024];
 	int nr = read(fd, buf, sizeof(buf));
 
-	while (nr < (int)sizeof(buf))
+	for (int i=0; i<10 && nr < (int)sizeof(buf); i++)
 	{
 		int n = read(fd, buf+nr, sizeof(buf)-nr);
-		if (n > 0) nr += n;
+		if (n > 0)
+		       	nr += n;
+		else 
+			ros::Duration(0.1).sleep();
 	}
 
 	for (int i=0; i<(int)sizeof(buf)-nhdr-nfetch; i++) 
@@ -614,12 +625,66 @@ int quirk_talk(int fd, int n, const char* cmd,
 	return -1;
 }
 
+// find right baudrate in all possible 
+int detect_baudrate(std::string& port)
+{
+	int possible_rates[] = { 921600, 768000, 500000, 384000, 256000, 230400 };
+
+	int all = sizeof(possible_rates)/sizeof(possible_rates[0]);
+	for (int i=0; i<all; i++)
+	{
+		if ( try_serial_port(port.c_str(), possible_rates[i]) == 0)
+		{
+			return possible_rates[i]; 
+		}
+	}
+		
+       	return -1;
+}
+
+int detect_baudrate_LDS25(std::string& port, int& unit_is_mm, int& with_confidence)
+{
+	int baud_rate;
+	if ( try_serial_port(port.c_str(), 38400) == 0)
+	{
+		baud_rate = 384000; 
+		unit_is_mm = 1; 
+		with_confidence = 1;
+		ROS_INFO("is 384000");
+	} else
+	{
+		baud_rate = 234000; 
+		unit_is_mm = 0; 
+		with_confidence = 0;
+		ROS_INFO("is 234000");
+	}
+	return baud_rate;
+}
+
+
+int reopen_uart(std::string& port, int baud_rate, int& unit_is_mm, int& with_confidence)
+{
+	if (baud_rate == -1) 
+	{
+		baud_rate = detect_baudrate(port);
+		if (baud_rate == -1)
+		{
+			ROS_ERROR("could not find right baudrate for %s", port.c_str());
+			return -1;
+		}
+	}
+	if (baud_rate == -77) 
+		baud_rate = detect_baudrate_LDS25(port, unit_is_mm, with_confidence);
+	
+	ROS_INFO("open %s @ %d", port.c_str(), baud_rate);
+	return open_serial_port(port.c_str(), baud_rate);
+}
+
 int main(int argc, char **argv)
 {
 	ros::init(argc, argv, "bluesea_laser_publisher");
        	ros::NodeHandle n;
        	ros::NodeHandle priv_nh("~");
-
 	
 	std_msgs::UInt16 rpms; 
 
@@ -642,19 +707,17 @@ int main(int argc, char **argv)
 	priv_nh.param("port", port, std::string("/dev/ttyUSB0"));
        	priv_nh.param("baud_rate", baud_rate, 256000);
 
-	//////////////////////////////////////////////////////////////
 	// for network comm
-	std::string dev_ip;
-	int udp_port, tcp_port;
 	priv_nh.param("dev_ip", dev_ip, std::string("192.168.158.91"));
 	priv_nh.param("udp_port", udp_port, 5000);
 	priv_nh.param("tcp_port", tcp_port, 5000);
 
 	// raw data format
-	int unit_is_mm, with_confidence, with_chk;
+	int unit_is_mm, with_confidence, with_chk, normal_size;
 	priv_nh.param("unit_is_mm", unit_is_mm, 1); // 0 : distance is CM, 1: MM
        	priv_nh.param("with_confidence", with_confidence, 1); // 
        	priv_nh.param("with_checksum", with_chk, 1); // 1 : enable packet checksum
+       	priv_nh.param("normal_size", normal_size, -1); // -1 : allow all packet, N : drop packets whose points less than N 
 
 	// data output
 	int output_scan, output_cloud, output_360;
@@ -693,72 +756,17 @@ int main(int argc, char **argv)
 			return -1;
 		}
 
-		// acknowlege device 
-		//rt = udp_talk(fd_udp, dev_ip.c_str(), udp_port, 0x4753, rand(), 0, NULL);
+		g_udp_socket = fd_udp;
 
-		//char cmd[12] = "LGCPSH";
-		//rt = udp_talk(fd_udp, dev_ip.c_str(), udp_port, 0x0043, rand(), 6, cmd);
+		// acknowlege device 
+		rt = send_cmd_udp(fd_udp, dev_ip.c_str(), udp_port, 0x4753, rand(), 0, NULL);
+
+		// start 
+		char cmd[12] = "LGCPSH";
+		rt = send_cmd_udp(fd_udp, dev_ip.c_str(), udp_port, 0x0043, rand(), 6, cmd);
 
 	} 
-	else if (type == "uart") {
-
-		if (baud_rate == -77)
-		{
-			if ( try_serial_port_384000(port.c_str()) == 0)
-			{
-				baud_rate = 384000; 
-				unit_is_mm = 1; 
-				with_confidence = 1;
-				printf("is 384000\n");
-			} else
-			{
-				baud_rate = 234000; 
-				unit_is_mm = 0; 
-				with_confidence = 0;
-				printf("is 234000\n");
-			}
-		}
-
-		fd_uart = open_serial_port(port.c_str(), baud_rate);
-
-		if (fd_uart < 0) {
-			ROS_ERROR("Open port error ");
-			return -1;
-		}
-		g_port = fd_uart;
-
-		//send UUID reading request 
-		//char buf[] = "LUUIDH";
-		//write(g_port, buf, strlen(buf));
-		char buf[32];
-		int nr = 0;
-		for (int i=0; i<300 && nr<=0; i++) { 
-			usleep(10000);
-			nr = read(fd_uart, buf, sizeof(buf));
-		}
-		if (nr <= 0) {
-			printf("serial port seem not working\n");
-			return -1;
-		}
-
-		if (quirk_talk(fd_uart, 6, "LUUIDH", 12, "PRODUCT SN: ", 9, g_uuid) == 0)
-	       	{
-		       	printf("get product SN : %s\n", g_uuid);
-	       	}
-
-		if (quirk_talk(fd_uart, 6, unit_is_mm == 0 ? "LMDCMH" : "LMDMMH", 
-					10, "SET LiDAR ", 9, buf) == 0)
-		{
-			printf("set LiDAR unit to %s\n", buf);
-		}
-
-		if (quirk_talk(fd_uart, 6, with_confidence == 0 ? "LNCONH" : "LOCONH", 
-					6, "LiDAR ", 5, buf) == 0)
-		{
-			printf("set LiDAR confidence to %s\n", buf);
-		}
-	}
-
+	
 	ros::Publisher laser_pub = n.advertise<sensor_msgs::LaserScan>("scan", 50);
 	ros::Publisher cloud_pub = n.advertise<sensor_msgs::PointCloud>("cloud", 50);
    
@@ -778,11 +786,58 @@ int main(int argc, char **argv)
 
 	while (ros::ok()) 
 	{ 
+		ros::spinOnce();
+
+		if (type == "uart" && fd_uart < 0) 
+		{
+			// check uart device file
+		       	if (access(port.c_str(), R_OK)) 
+			{
+				ROS_ERROR("port %s not ready", port.c_str());
+				ros::Duration(10).sleep();
+				continue;
+		       	}
+
+			fd_uart = reopen_uart(port, baud_rate, unit_is_mm, with_confidence);
+			if (fd_uart < 0) {
+				ROS_ERROR("Open port %s error", port.c_str());
+				continue;
+			}
+			g_uart_port = fd_uart;
+#if 0
+			int nr = 0;
+			for (int i=0; i<300 && nr<=0; i++) { 
+				usleep(10000);
+				nr = read(fd_uart, buf, sizeof(buf));
+			}
+			if (nr <= 0) {
+				ROS_ERROR("serial port seem not working");
+				return -1;
+			}
+#endif
+
+			ROS_INFO("connect to %s", port.c_str());
+			//read device's UUID 
+			char buf[32];
+			if (quirk_talk(fd_uart, 6, "LUUIDH", 12, "PRODUCT SN: ", 9, buf) == 0)
+			       	ROS_INFO("get product SN : %s", buf);
+
+			// setup output data format
+			if (quirk_talk(fd_uart, 6, unit_is_mm == 0 ? "LMDCMH" : "LMDMMH", 
+						10, "SET LiDAR ", 9, buf) == 0)
+			       	ROS_INFO("set LiDAR unit to %s", buf);
+
+			// enable/disable output intensity
+			if (quirk_talk(fd_uart, 6, with_confidence == 0 ? "LNCONH" : "LOCONH", 
+						6, "LiDAR ", 5, buf) == 0)
+				ROS_INFO("set LiDAR confidence to %s", buf);
+		}
+
 		if (type == "tcp" && fd_tcp < 0) 
 		{
 			// open TCP port
 			int sock = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
-			if (sock < 0) { ROS_ERROR("socket TCP failed\n"); return 0; }
+			if (sock < 0) { ROS_ERROR("socket TCP failed"); return 0; }
 
 			struct sockaddr_in addr;
 			memset(&addr, 0, sizeof(addr));     /* Zero out structure */
@@ -797,7 +852,7 @@ int main(int argc, char **argv)
 			{
 				ROS_ERROR("connect (%s:%d) failed", dev_ip.c_str(), tcp_port);
 			       	close(sock); 
-				sleep(15);
+				//sleep(15);
 			       	continue;
 		       	}
 			fd_tcp = sock;
@@ -827,24 +882,25 @@ int main(int argc, char **argv)
 		}
 		
 		
-		struct timeval to = { 1, 1 };
+		struct timeval to = { 5, 1 };
+
 	       	int ret = select(fd_max+1, &fds, NULL, NULL, &to); 
 
 		if (ret == 0) 
 		{
 			ROS_ERROR("read data timeout");
-			if (fd_tcp > 0) {
-				close(fd_tcp);
-				fd_tcp = -1;
-			}
+			if (fd_tcp > 0) { close(fd_tcp); fd_tcp = -1; }
 			continue;
 		}
 		
 		if (ret < 0) {
 			ROS_ERROR("select error");
-			return -1;
+			if (fd_tcp > 0) { close(fd_tcp); fd_tcp = -1; }
+			if (fd_uart > 0) { close(fd_uart); fd_uart = g_uart_port = -1; }
+			continue;
 		}
 
+		// read UDP data
 		if (fd_udp > 0 && FD_ISSET(fd_udp, &fds)) 
 		{ 
 			RawData dat;
@@ -861,33 +917,41 @@ int main(int argc, char **argv)
 					should_publish = true;
 				}
 			}
+			else if (dat.code == 0xfacf && dat.N * 3 + 10 == dw && (dat.angle % 360) == 0)
+			{
+
+			}
 			else {
-				printf("get udp %d bytes :", dw);
+				char line[256];
+				int n = 0;
 				unsigned char* buf = (unsigned char*)&dat;
 				for (int i=0; i<dw || i<16; i++) {
-					printf("%02x ", buf[i]);
+					n += sprintf(line+n, "%02x ", buf[i]);
 				}
-				printf("\n");
+				ROS_ERROR("get udp %d bytes : %s", dw, line);
 			}
 		}
 
 		int new_data = -1;
+		// read UART data
 		if (fd_uart > 0 && FD_ISSET(fd_uart, &fds)) 
 		{
 			int nr = read(fd_uart, buf+buf_len, BUF_SIZE - buf_len);
 			if (nr <= 0) {
 				ROS_ERROR("read port %d error %d", buf_len, nr);
-				break;
+				close(fd_uart);
+				fd_uart = g_uart_port = -1;
+				continue;
 			}
-
-			if (nr == 0) continue;
+			//if (nr == 0) continue;
 			new_data = nr;
 		}
 
+		// read TCP data
 		if (fd_tcp > 0 && FD_ISSET(fd_tcp, &fds)) 
 		{
 			int nr = recv(fd_tcp,  buf+buf_len, BUF_SIZE - buf_len, 0);
-			if (nr < 0) {
+			if (nr <= 0) {
 				ROS_ERROR("tcp error");
 				close(fd_tcp);
 				fd_tcp = -1;
@@ -909,12 +973,22 @@ int main(int argc, char **argv)
 			RawData dat;
 			bool is_pack;
 			if (unit_is_mm && with_confidence)
+			{
 				is_pack = parse_data_3(buf_len, buf, dat, consume, with_chk);
+			}
 			else
+			{
 				is_pack = parse_data(buf_len, buf, dat, 
 						unit_is_mm, with_confidence, consume,
 						with_chk);
-			if (is_pack)
+			}
+
+			if (is_pack && dat.N < normal_size) 
+			{
+				// drop abnormal packet
+				ROS_INFO("abnormal %d : %d points", dat.angle, dat.N);
+			}
+			else if (is_pack)
 			{
 				dat360[(dat.angle%3600)/360] = dat;
 
@@ -1096,8 +1170,6 @@ int main(int argc, char **argv)
 			should_publish = false;
 		}
 
-
-		ros::spinOnce();
 	}
 
 	//close(fd);
