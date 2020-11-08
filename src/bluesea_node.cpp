@@ -1,6 +1,6 @@
 
 /*********************************************************************
- * This is demo for ROS refering to xv_11_laser_driver.
+ * Lanhai ROS driver
  * serial port version  LDS-25: 
  rosrun bluesea bluesea_node _frame_id:=map _port:=/dev/ttyUSB0 _baud_rate:=230400 _firmware_version:=2 _output_scan:=1 _output_cloud:=0 _unit_is_mm:=0 _with_confidence:=0
  * serial port version  LDS-50: 
@@ -17,13 +17,10 @@
 //#define ROS_ERROR printf
 #include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
-#include <sys/time.h>
-#include <pthread.h>
 #include <stdio.h> 
 #include <stdlib.h> 
-#include <unistd.h> 
 #include <string.h> 
+#include <errno.h>
 #include <sys/types.h> 
 #include <netinet/in.h> 
 #include <netinet/tcp.h>
@@ -31,21 +28,15 @@
 #include <sys/wait.h> 
 #include <arpa/inet.h> 
 #include <stdarg.h>
-#include <pthread.h>
+#include <unistd.h>
 #include <termios.h>
+#include <sys/time.h>
 #include <sys/ioctl.h>
 #include <fcntl.h>
-#include <errno.h>
-#include <netinet/in.h> 
-#include <netinet/tcp.h>
-#include <sys/socket.h>
+#include <unistd.h> 
 
 extern "C" int change_baud(int fd, int baud);
 
-
-
-//#include <linux/termios.h>
-//
 struct RawDataHdr
 {
 	unsigned short code;
@@ -58,15 +49,13 @@ struct RawData
 	unsigned short code;
 	unsigned short N;
 	unsigned short angle;
+	unsigned short span;
 	unsigned short distance[1000];
 	unsigned char confidence[1000];
+	float angles[1000];
 };
 
-
-#define PI 3.1415926
-
 #define HDR_SIZE 6
-
 #define BUF_SIZE 512*1024
 
 struct CmdHeader
@@ -77,6 +66,14 @@ struct CmdHeader
 	unsigned short len;
 };
 
+struct RosPoint
+{
+	float angle;
+	int distance;
+	int intensity;
+};
+
+
 // serial port handle
 int g_uart_port = -1;
 
@@ -86,6 +83,16 @@ int g_udp_socket = -1;
 // parameters for network comm
 std::string dev_ip;
 int udp_port, tcp_port;
+
+int ros_point_cmp(const void* p1, const void* p2)
+{
+	const RosPoint* pt1 = (const RosPoint*)p1;
+	const RosPoint* pt2 = (const RosPoint*)p2;
+
+	return (pt1->angle - pt2->angle)*5000;
+}
+
+
 	
 // CRC32
 unsigned int stm32crc(unsigned int *ptr, unsigned int len)
@@ -265,6 +272,19 @@ int open_serial_port(const char* port, int baudrate)
 	return fd;
 }
 
+void update_angles(RawData& dat)
+{
+	if (dat.angle < 1800)
+	       	dat.angles[0] = -dat.angle * M_PI / 1800;
+	else
+	       	dat.angles[0] = (3600 - dat.angle) * M_PI / 1800;
+
+	for (int i=1; i<dat.N; i++) 
+	{
+		dat.angles[i] = dat.angles[0] - dat.span*i*(M_PI/1800)/dat.N;
+	}
+}
+
 // translate lidar raw data to ROS laserscan message
 bool parse_data_3(int len, unsigned char* buf, RawData& dat, int& consume, int with_chk) 
 {
@@ -293,7 +313,7 @@ bool parse_data_3(int len, unsigned char* buf, RawData& dat, int& consume, int w
 
 		if (hdr.N > 300 || hdr.N < 30) 
 		{
-			ROS_ERROR("points number %d seem not correct", hdr.N);
+			ROS_INFO("points number %d, droped", hdr.N);
 			idx += 2;
 			continue;
 		}
@@ -323,7 +343,7 @@ bool parse_data_3(int len, unsigned char* buf, RawData& dat, int& consume, int w
 
 		if (with_chk != 0 && chk != sum) 
 		{
-			ROS_ERROR("chksum3 error");
+			ROS_INFO("checksum 3 error");
 			consume = idx + HDR_SIZE + 3*hdr.N + 2;
 			return 0;
 		}
@@ -404,13 +424,14 @@ bool parse_data(int len, unsigned char* buf, RawData& dat, int is_mm, int with_c
 
 		if (with_chk != 0 && chk != sum) 
 		{
-			ROS_ERROR("chksum error");
+			ROS_INFO("checkksum error");
 			consume = idx + HDR_SIZE + 2*hdr.N + 2;
 			return 0;
 		}
 
 		memcpy(&dat, &hdr, HDR_SIZE);
 		// memcpy(dat.data, buf+idx+HDR_SIZE, 2*hdr.N);
+		//printf("get %d + %d\n", hdr.angle, hdr.N);
 
 		idx += HDR_SIZE + 2*hdr.N + 2;
 		consume = idx;
@@ -589,10 +610,11 @@ int quirk_talk(int fd, int n, const char* cmd,
 		int nhdr, const char* hdr_str, 
 		int nfetch, char* fetch)
 {
-	ROS_INFO("send command : %s", cmd);
+	ROS_INFO("send command : \'%s\'", cmd);
 	write(fd, cmd, n);
 			
-	char buf[1024];
+	char buf[4096];
+
 	int nr = read(fd, buf, sizeof(buf));
 
 	for (int i=0; i<10 && nr < (int)sizeof(buf); i++)
@@ -604,7 +626,7 @@ int quirk_talk(int fd, int n, const char* cmd,
 			ros::Duration(0.1).sleep();
 	}
 
-	for (int i=0; i<(int)sizeof(buf)-nhdr-nfetch; i++) 
+	for (int i=0; i<nr-nhdr-nfetch; i++) 
 	{
 		if (memcmp(buf+i, hdr_str, nhdr) == 0) 
 		{
@@ -613,15 +635,17 @@ int quirk_talk(int fd, int n, const char* cmd,
 			return 0;
 		}
 	}
+
+
 	char path[256];
 	sprintf(path, "/tmp/%s.dat", hdr_str);
 	FILE* fp = fopen(path, "wb");
 	if (fp) {
-		fwrite(buf, 1, sizeof(buf), fp);
+		fwrite(buf, 1, nr, fp);
 		fclose(fp);
 	}
 
-	printf("read %d bytes, not found %s\n", nr, hdr_str);
+	ROS_ERROR("read %d bytes, not found %s", nr, hdr_str);
 	return -1;
 }
 
@@ -680,6 +704,156 @@ int reopen_uart(std::string& port, int baud_rate, int& unit_is_mm, int& with_con
 	return open_serial_port(port.c_str(), baud_rate);
 }
 
+
+void pack_fan_data(const RawData& dat, sensor_msgs::LaserScan& msg)
+{
+	msg.angle_min = dat.angle * M_PI/1800; 
+	msg.angle_max = (dat.angle+360) * M_PI/1800; 
+	msg.angle_increment = M_PI / 5 / dat.N;
+
+	msg.intensities.resize(dat.N); 
+	msg.ranges.resize(dat.N);
+
+	for (int j=0; j<dat.N; j++) 
+	{
+		msg.ranges[j] = dat.distance[j]/1000.0 ; 
+		msg.intensities[j] = dat.confidence[j];
+	} 
+}
+
+
+bool pack_fan_data(const RawData& dat, sensor_msgs::LaserScan& msg, double min_angle, double max_angle)
+{
+	int count = 0;
+	for (int i=0; i<dat.N; i++) 
+	{
+		if (dat.angles[i] < min_angle) continue;
+		if (dat.angles[i] > max_angle) continue;
+		count++;
+	}
+	if (count == 0) {
+		return false;
+	}
+
+	msg.intensities.resize(count); 
+	msg.ranges.resize(count);
+
+	int idx = 0;
+	for (int j=dat.N-1; j>=0; j--) 
+	{
+		if (dat.angles[j] < min_angle) continue;
+		if (dat.angles[j] > max_angle) continue;
+
+		if (idx == 0) {
+			msg.angle_max = dat.angles[j];
+			msg.angle_min = dat.angles[j];
+		} else {
+			if (msg.angle_max < dat.angles[j])
+				msg.angle_max = dat.angles[j];
+			if (msg.angle_min > dat.angles[j])
+				msg.angle_min = dat.angles[j];
+		}
+		
+		msg.ranges[idx] = dat.distance[j]/1000.0 ; 
+		msg.intensities[idx] = dat.confidence[j];
+		idx++;
+	} 
+
+	return true;
+}
+
+bool pack_all_data_within(int N, RawData* dat360, sensor_msgs::LaserScan& msg, double min_angle, double max_angle)
+{
+	RosPoint* points = new RosPoint[N+1];
+       	if (!points) {
+		ROS_ERROR("out of memory!");
+		return false;
+	}
+
+	int count = 0;
+	for (int i=0; i<10; i++) 
+	{
+		for (int j=0; j<dat360[i].N; j++) 
+		{
+			if (min_angle > dat360[i].angles[j]) continue;
+			if (max_angle < dat360[i].angles[j]) continue;
+			points[count].angle = dat360[i].angles[j];
+			points[count].distance = dat360[i].distance[j];
+			points[count].intensity = dat360[i].confidence[j];
+			count++;
+		}
+	}
+
+	if (count < 10) 
+	{
+		delete[] points;
+		ROS_ERROR("only get %d points?", count);
+		return false;
+	}
+
+	qsort(points, count, sizeof(RosPoint), ros_point_cmp);
+
+	msg.angle_min = points[0].angle;
+	msg.angle_max = points[count-1].angle;
+
+	msg.intensities.resize(count); 
+	msg.ranges.resize(count);
+
+	for (int i=0; i<count; i++) {
+		msg.ranges[i] = points[i].distance /1000.0 ; 
+		msg.intensities[i] = 1 + points[i].intensity;
+	}
+
+	//ROS_INFO("publish %d points, [%f, %f]", 
+	//count, msg.angle_min, msg.angle_max);
+	
+	delete[] points;
+	return true;
+}
+
+bool pack_all_data(int N, RawData* dat360, sensor_msgs::LaserScan& msg, int from_zero, int mirror)
+{
+	if (from_zero == 0) {
+		msg.angle_min = 0; 
+		msg.angle_max = M_PI*2*(N-1)/N; 
+	}
+	else {
+		msg.angle_min = -M_PI;
+		msg.angle_max = M_PI - M_PI*2/N;
+	}
+
+	msg.intensities.resize(N); 
+	msg.ranges.resize(N);
+
+	N = 0;
+	if (mirror == 0) for (int j=0; j<10; j++) 
+	{
+		for (int i=0; i<dat360[j].N; i++) 
+		{
+			msg.ranges[N] = dat360[j].distance[i]/1000.0 ; 
+			msg.intensities[N] = dat360[j].confidence[i];
+			N++;
+		}
+	} 
+	else for (int jj=0; jj<10; jj++) 
+	{
+		int j = from_zero ? jj : ((jj+5) % 10);
+		
+		int idx[10] = { 4, 3, 2, 1, 0, 9, 8, 7, 6, 5 };
+		int id = idx[j];
+		int cnt = dat360[ id ].N;
+		for (int i=0; i<cnt; i++) 
+		{
+			msg.ranges[N] = dat360[id].distance[cnt-1-i] /1000.0 ; 
+			msg.intensities[N] = 1 + dat360[id].confidence[cnt-1-i];
+			N++;
+		}
+	}
+
+	return true;
+}
+
+
 int main(int argc, char **argv)
 {
 	ros::init(argc, argv, "bluesea_laser_publisher");
@@ -725,6 +899,12 @@ int main(int argc, char **argv)
 	priv_nh.param("output_cloud", output_cloud, 0); // 1: enable output xyz format, 0 : disable
 	priv_nh.param("output_360", output_360, 1); // 1: packet data of 360 degree (multiple RawData), publish once
 							// 0: publish every RawData (36 degree)
+	// angle filter
+	int with_angle_filter;
+	double min_angle, max_angle;
+	priv_nh.param("with_angle_filter", with_angle_filter, 0); // 1: enable angle filter, 0: diable
+	priv_nh.param("min_angle", min_angle, -M_PI); // angle filter's low threshold, default value: -pi
+       	priv_nh.param("max_angle", max_angle, M_PI); // angle filters' up threashold, default value: pi
 
 	// frame information
        	std::string frame_id;
@@ -817,20 +997,40 @@ int main(int argc, char **argv)
 #endif
 
 			ROS_INFO("connect to %s", port.c_str());
+
+			// write(fd_uart, "LUUIDH", 6); usleep(1000);
+
 			//read device's UUID 
 			char buf[32];
-			if (quirk_talk(fd_uart, 6, "LUUIDH", 12, "PRODUCT SN: ", 9, buf) == 0)
-			       	ROS_INFO("get product SN : %s", buf);
+			for (int i=0; i<10; i++)
+			{
+				if (quirk_talk(fd_uart, 6, "LUUIDH", 12, "PRODUCT SN: ", 9, buf) == 0)
+				{
+					ROS_INFO("get product SN : \'%s\'", buf);
+					break;
+				}
+			}
 
 			// setup output data format
-			if (quirk_talk(fd_uart, 6, unit_is_mm == 0 ? "LMDCMH" : "LMDMMH", 
-						10, "SET LiDAR ", 9, buf) == 0)
-			       	ROS_INFO("set LiDAR unit to %s", buf);
+			for (int i=0; i<10; i++) 
+			{
+				if (quirk_talk(fd_uart, 6, unit_is_mm == 0 ? "LMDCMH" : "LMDMMH", 
+							10, "SET LiDAR ", 9, buf) == 0)
+				{
+					ROS_INFO("set LiDAR unit to %s", buf);
+					break;
+				}
+			}
 
 			// enable/disable output intensity
-			if (quirk_talk(fd_uart, 6, with_confidence == 0 ? "LNCONH" : "LOCONH", 
-						6, "LiDAR ", 5, buf) == 0)
-				ROS_INFO("set LiDAR confidence to %s", buf);
+			for (int i=0; i<10; i++) {
+				if (quirk_talk(fd_uart, 6, with_confidence == 0 ? "LNCONH" : "LOCONH", 
+							6, "LiDAR ", 5, buf) == 0)
+				{
+					ROS_INFO("set LiDAR confidence to %s", buf);
+					break;
+				}
+			}
 		}
 
 		if (type == "tcp" && fd_tcp < 0) 
@@ -983,6 +1183,13 @@ int main(int argc, char **argv)
 						with_chk);
 			}
 
+			if (is_pack) 
+			{
+				dat.span = 360;
+
+				update_angles(dat);
+			}
+
 			if (is_pack && dat.N < normal_size) 
 			{
 				// drop abnormal packet
@@ -995,7 +1202,8 @@ int main(int argc, char **argv)
 				if (output_360 != 0) 
 				{
 					// wait for 360 degree 
-				       	if (dat.angle == 3240) should_publish = true;
+				       	if (dat.angle == 3240) 
+						should_publish = true;
 				} 
 				else 
 				{ 
@@ -1004,26 +1212,24 @@ int main(int argc, char **argv)
 					msg.header.stamp = ros::Time::now();
 					msg.header.frame_id = frame_id;
 
-					msg.angle_min = dat.angle * M_PI/1800; 
-					msg.angle_max = (dat.angle+360) * M_PI/1800; 
-					msg.angle_increment = M_PI / 5 / dat.N;
+					msg.range_min = 0.; 
+					msg.range_max = 100;//max_distance;//8.0; 
 
 					double scan_time = 1/100.;
 					msg.scan_time = scan_time;
 					msg.time_increment = scan_time / dat.N;
 
-					msg.range_min = 0.; 
-					msg.range_max = 100;//max_distance;//8.0; 
-					
-					msg.intensities.resize(dat.N); 
-					msg.ranges.resize(dat.N);
+					msg.angle_increment = dat.span * M_PI/1800 / dat.N;
 
-					for (int j=0; j<dat.N; j++) 
+					if (with_angle_filter == 0) 
 					{
-						msg.ranges[j] = dat.distance[j]/1000.0 ; 
-						msg.intensities[j] = dat.confidence[j];
-					} 
-					laser_pub.publish(msg); 
+						pack_fan_data(dat, msg);
+						laser_pub.publish(msg); 
+					}
+					else if (pack_fan_data(dat, msg, min_angle, max_angle))
+					{
+						laser_pub.publish(msg); 
+					}
 				}
 			}
 
@@ -1040,7 +1246,6 @@ int main(int argc, char **argv)
 							buf[0], buf[1], buf[2],
 						       	buf[3], buf[4], buf[5]);
 				}
-
 
 				for (int i=consume; i<buf_len; i++) 
 					buf[i - consume] = buf[i];
@@ -1072,7 +1277,7 @@ int main(int argc, char **argv)
 					for (int i=0; i<dat360[j].N; i++) 
 					{
 						float r = dat360[j].distance[i]/1000.0 ; 
-						float a = j*PI/5 + i*PI/5/dat360[j].N;
+						float a = j*M_PI/5 + i*M_PI/5/dat360[j].N;
 						cloud.points[idx].x = cos(a) * r;
 						cloud.points[idx].y = sin(a) * r;
 						cloud.points[idx].z = 0;
@@ -1102,7 +1307,7 @@ int main(int argc, char **argv)
 				}
 				N = mx * 10;
 			}
-
+		 
 			if (n == 10 && output_scan != 0) 
 			{
 				sensor_msgs::LaserScan msg; 
@@ -1110,62 +1315,25 @@ int main(int argc, char **argv)
 				msg.header.stamp = ros::Time::now();
 				msg.header.frame_id = frame_id;
 
-				if (from_zero == 0) {
-					msg.angle_min = 0; 
-					msg.angle_max = M_PI*2*(N-1)/N; 
-				}
-				else {
-					msg.angle_min = -M_PI;
-					msg.angle_max = M_PI - M_PI*2/N;
-				}
-				msg.angle_increment = M_PI*2 / N;
-
 				double scan_time = 1/10.;
 				msg.scan_time = scan_time;
 				msg.time_increment = scan_time / N;
+					
+				msg.angle_increment = M_PI*2 / N;
 
 				msg.range_min = 0.; 
 				msg.range_max = 100;//max_distance;//8.0; 
-				
-				msg.intensities.resize(N); 
-				msg.ranges.resize(N);
 
-				N = 0;
-				if (mirror == 0) for (int j=0; j<10; j++) 
+				if (with_angle_filter == 0)
 				{
-					for (int i=0; i<dat360[j].N; i++) 
-					{
-						msg.ranges[N] = dat360[j].distance[i]/1000.0 ; 
-						msg.intensities[N] = dat360[j].confidence[i];
-						N++;
-					}
-				} 
-				else for (int jj=0; jj<10; jj++) 
-				{
-					int j = from_zero ? jj : ((jj+5) % 10);
-					
-					int idx[10] = { 4, 3, 2, 1, 0, 9, 8, 7, 6, 5 };
-					int id = idx[j];
-					int cnt = dat360[ id ].N;
-					for (int i=0; i<cnt; i++) 
-					{
-						msg.ranges[N] = dat360[id].distance[cnt-1-i] /1000.0 ; 
-						msg.intensities[N] = 1 + dat360[id].confidence[cnt-1-i];
-						N++;
-					}
+					if (pack_all_data_within(N, dat360, msg, min_angle, max_angle)) 
+						laser_pub.publish(msg); 
+				} else {
+					if (pack_all_data(N, dat360, msg, from_zero, mirror)) 
+						laser_pub.publish(msg); 
 				}
 
-				laser_pub.publish(msg); 
-
-#if 0
-				static timeval last;
-				timeval now;
-				gettimeofday(&now, NULL);
-				printf("published %ld\n", (now.tv_sec - last.tv_sec)*1000 + now.tv_usec/1000 - last.tv_usec/1000);
-				last = now;
-#endif
 			}
-
 			
 			should_publish = false;
 		}
@@ -1175,4 +1343,5 @@ int main(int argc, char **argv)
 	//close(fd);
        	return 0;
 }
+
 
