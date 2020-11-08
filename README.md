@@ -62,3 +62,11 @@ Parameters
 * int from_zero; // 1: angle range 0 - 360, 0: angle range -180 - +180
 * int angle_patch; // 1: make points number of every fans to unique
 * int normal_size; // abnormal packet (points number < normal_size) will be droped
+
+// angle filter
+* int with_angle_filter;
+* int with_angle_filter ; // 1: enable angle filter, 0: diable
+* double min_angle; // angle filter's low threshold, default value: -pi
+* double max_angle; // angle filters' up threashold, default value: pi
+
+
