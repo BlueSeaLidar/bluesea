@@ -48,15 +48,19 @@ Parameters
 // for network comm
 * std::string dev_ip; // network 
 * int udp_port, tcp_port; 
-//	
+
+// for intput data format
 * int unit_is_mm; //  0 : unit of raw data distance is CM, 1: MM
 * int with_confidence; // 1: raw data with intensity, 0: no intensity
 * int with_checksum; // 1 : enable packet checksum
+
+// output data type
 * int output_scan; // 1: enable output angle+distance mode, 0: disable
 * int output_cloud; // 1: enable output xyz format data, 0 : disable
 * int output_360; // 1: collect multiple RawData packets (360 degree), then publish
 				// 0: publish every RawData (36 degree)
 * std::string frame_id;	// frame information, could be used for rviz
+
 // output data format
 * int mirror; // 0: clockwise, 1: counterclockwise
 * int from_zero; // 1: angle range 0 - 360, 0: angle range -180 - +180
