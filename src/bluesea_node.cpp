@@ -74,7 +74,7 @@ struct RosPoint
 };
 
 // UUID
-char g_uuid[32];
+char g_uuid[32] = "";
 
 // serial port handle
 int g_uart_port = -1;
