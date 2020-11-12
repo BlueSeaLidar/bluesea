@@ -73,6 +73,8 @@ struct RosPoint
 	int intensity;
 };
 
+// UUID
+char g_uuid[32];
 
 // serial port handle
 int g_uart_port = -1;
@@ -1004,9 +1006,9 @@ int main(int argc, char **argv)
 			char buf[32];
 			for (int i=0; i<10; i++)
 			{
-				if (quirk_talk(fd_uart, 6, "LUUIDH", 12, "PRODUCT SN: ", 9, buf) == 0)
+				if (quirk_talk(fd_uart, 6, "LUUIDH", 12, "PRODUCT SN: ", 9, g_uuid) == 0)
 				{
-					ROS_INFO("get product SN : \'%s\'", buf);
+					ROS_INFO("get product SN : \'%s\'", g_uuid);
 					break;
 				}
 			}
