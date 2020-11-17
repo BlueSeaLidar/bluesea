@@ -73,3 +73,11 @@ Parameters
 * double max_angle; // angle filters' up threashold, default value: pi
 
 
+Dynamic Reconfigure Parameters
+=====================================================================
+int rpm; // motor's scaning RPM [300, 1500]
+
+command line like this:
+rosrun dynamic_reconfigure dynparam set /lidar1/lidar01 "{'rpm':700}"
+
+
