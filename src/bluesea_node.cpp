@@ -14,6 +14,11 @@
 #include <sensor_msgs/PointCloud.h>
 #include <std_msgs/UInt16.h>
 #include <std_srvs/Empty.h>
+
+#include <dynamic_reconfigure/server.h>
+#include <bluesea/DynParamsConfig.h>
+
+
 //#define ROS_ERROR printf
 #include <stdio.h>
 #include <stdlib.h>
@@ -85,6 +90,23 @@ int g_udp_socket = -1;
 // parameters for network comm
 std::string dev_ip;
 int udp_port, tcp_port;
+
+void setup_params(bluesea::DynParamsConfig &config, uint32_t level) 
+{
+	ROS_INFO("Change RPM to [%d]", config.rpm);
+
+	if (g_uart_port != -1) {
+		char cmd[32];
+		sprintf(cmd, "LSRPM:%dH", config.rpm);
+		int nl = strlen(cmd);
+		int nw = write(g_uart_port, cmd, nl);
+		if (nw != nl)
+		       	ROS_ERROR("write uart error %d", nw);
+	}
+	else if (g_udp_socket != -1) {
+
+	}
+}
 
 int ros_point_cmp(const void* p1, const void* p2)
 {
@@ -957,6 +979,9 @@ int main(int argc, char **argv)
 	ros::ServiceServer stop_srv = n.advertiseService("stop_motor", stop_motor);
        	ros::ServiceServer start_srv = n.advertiseService("start_motor", start_motor);
 
+	dynamic_reconfigure::Server<bluesea::DynParamsConfig> server;
+       	server.setCallback( boost::bind(&setup_params, _1, _2) );
+
 	unsigned char* buf = new unsigned char[BUF_SIZE];
 	int buf_len = 0;
 
@@ -1345,5 +1370,6 @@ int main(int argc, char **argv)
 	//close(fd);
        	return 0;
 }
+
 
 
