@@ -12,7 +12,7 @@ How to run Lanhai ros node (Serial Port Version)
 2) or Run : sudo chmod 666 /dev/ttyUSB0 # make usb serial port readable
 
 ## if your lidar model is LDS-50C-2 :
-* rosrun bluesea bluesea_node _frame_id:=map _port:=/dev/ttyUSB0 _baud_rate:=500000 _firmware_version:=2 _output_scan:=1 _output_cloud:=1 _mirror:=1 _from_zero:=1 _angle_patch:=1 _unit_is_mm:=1 _with_confidence:=1
+* rosrun bluesea bluesea_node _frame_id:=map _port:=/dev/ttyUSB0 _baud_rate:=500000 _firmware_version:=2 _output_scan:=1 _output_cloud:=0 _mirror:=1 _from_zero:=1 _with_resample:=true _resample_res:=0.5 _unit_is_mm:=1 _with_confidence:=1
 * or use roslaunch src/bluesea/launch/LDS-50C-2.launch
     
 ## if your lidar model is LDS-25C or LDS-50C:
@@ -61,10 +61,14 @@ Parameters
 				// 0: publish every RawData (36 degree)
 * std::string frame_id;	// frame information, could be used for rviz
 
+// angle composate
+* bool with_resample; // resample angle resolution
+* double resample_res; // 0.5: resample angle resolution @ 0.5 degree 
+
+
 // output data format
 * int mirror; // 0: clockwise, 1: counterclockwise
 * int from_zero; // 1: angle range 0 - 360, 0: angle range -180 - +180
-* int angle_patch; // 1: make points number of every fans to unique
 * int normal_size; // abnormal packet (points number < normal_size) will be droped
 
 // angle filter
