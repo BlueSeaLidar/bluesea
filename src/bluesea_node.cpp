@@ -877,6 +877,48 @@ bool pack_all_data(int N, RawData* dat360, sensor_msgs::LaserScan& msg, int from
 	return true;
 }
 
+void resample(RawData& dat, int NN)
+{
+	int* index = new int[NN];
+	double* errs = new double[NN];
+
+	for (int i=0; i<NN; i++) index[i] = -1;
+
+	for (int i=0; i<dat.N; i++) 
+	{
+		if (dat.distance[i] == 0) continue;
+
+		int idx = round(double(i*NN) / dat.N);
+		if (idx < NN) 
+		{
+			double err = fabs(double(dat.span * i) /dat.N - double(dat.span * idx) / NN);
+			if (index[idx] == -1 || err < errs[idx]) {
+				index[idx] = i;
+				errs[idx] = err;
+			}
+		}
+	}
+
+	for (int i=1; i<NN; i++) 
+	{
+		if (index[i] != -1) 
+		{
+			dat.distance[i] = dat.distance[index[i]];
+			dat.confidence[i] = dat.confidence[index[i]];
+		}
+		else {
+			dat.distance[i] = 0;
+			dat.confidence[i] = 0;
+		}
+
+		dat.angles[i] = dat.angles[0] - dat.span*i*(M_PI/1800)/NN;
+	}
+
+	dat.N = NN;
+
+	delete index;
+	delete errs;
+}
 
 int main(int argc, char **argv)
 {
@@ -917,6 +959,14 @@ int main(int argc, char **argv)
        	priv_nh.param("with_checksum", with_chk, 1); // 1 : enable packet checksum
        	priv_nh.param("normal_size", normal_size, -1); // -1 : allow all packet, N : drop packets whose points less than N 
 
+	// angle composate
+	bool with_resample;
+       	priv_nh.param("with_resample", with_resample, true); // resample angle resolution
+	double resample_res;
+       	priv_nh.param("resample_res", resample_res, 0.5); // resample angle resolution @ 0.5 degree 
+	//int angle_patch;
+       	//priv_nh.param("angle_patch", angle_patch, 1); // make points number of every fans to unique
+
 	// data output
 	int output_scan, output_cloud, output_360;
 	priv_nh.param("output_scan", output_scan, 1); // 1: enable output angle+distance mode, 0: disable
@@ -937,10 +987,9 @@ int main(int argc, char **argv)
        	priv_nh.param("firmware_version", firmware_number, 2);
 
 	// output data format
-	int mirror, from_zero, angle_patch;
+	int mirror, from_zero;
        	priv_nh.param("mirror", mirror, 0); // 0: clockwise, 1: counterclockwise
        	priv_nh.param("from_zero", from_zero, 0); // 1: angle range [0 - 360), 0: angle range [-180, 180)
-       	priv_nh.param("angle_patch", angle_patch, 1); // make points number of every fans to unique
        	
 	// open serial port
 	int fd_uart = -1, fd_udp = -1, fd_tcp = -1;
@@ -1213,8 +1262,13 @@ int main(int argc, char **argv)
 			if (is_pack) 
 			{
 				dat.span = 360;
-
 				update_angles(dat);
+
+				if (with_resample && resample_res > 0.05)
+				{
+					int NN = dat.span/10/resample_res;
+					if (NN < dat.N) resample(dat, NN);
+				}
 			}
 
 			if (is_pack && dat.N < normal_size) 
@@ -1315,6 +1369,7 @@ int main(int argc, char **argv)
 				cloud_pub.publish(cloud);
 				// printf("cloud published\n");
 			}
+#if 0
 			if (n == 10 && angle_patch != 0) 
 			{
 				int mx = 0;
@@ -1334,6 +1389,7 @@ int main(int argc, char **argv)
 				}
 				N = mx * 10;
 			}
+#endif
 		 
 			if (n == 10 && output_scan != 0) 
 			{
