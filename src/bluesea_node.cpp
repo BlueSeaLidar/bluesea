@@ -1407,7 +1407,7 @@ int main(int argc, char **argv)
 				msg.range_min = 0.; 
 				msg.range_max = 100;//max_distance;//8.0; 
 
-				if (with_angle_filter == 0)
+				if (with_angle_filter != 0)
 				{
 					if (pack_all_data_within(N, dat360, msg, min_angle, max_angle)) 
 						laser_pub.publish(msg); 
@@ -1415,6 +1415,7 @@ int main(int argc, char **argv)
 					if (pack_all_data(N, dat360, msg, from_zero, mirror)) 
 						laser_pub.publish(msg); 
 				}
+
 
 			}
 			
