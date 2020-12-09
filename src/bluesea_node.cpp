@@ -87,6 +87,9 @@ int g_uart_port = -1;
 // UDP socket
 int g_udp_socket = -1;
 
+// TCP socket
+int g_tcp_socket = -1;
+
 // parameters for network comm
 std::string dev_ip;
 int udp_port, tcp_port;
@@ -105,6 +108,17 @@ void setup_params(bluesea::DynParamsConfig &config, uint32_t level)
 	}
 	else if (g_udp_socket != -1) {
 
+	}
+	else if (g_tcp_socket != -1) {
+
+		char cmd[32];
+		sprintf(cmd, "LSRPM:%dH", config.rpm);
+		int nl = strlen(cmd);
+		int nw = send(g_tcp_socket, cmd, nl, 0);
+		if (nw != nl)
+		{
+		       	ROS_ERROR("send tcp error %d", nw);
+		}
 	}
 }
 
@@ -591,14 +605,30 @@ int parse_data(int len, unsigned char* buf, sensor_msgs::LaserScan& scan_msg, in
 }
 #endif
 
+bool should_start = true;
 // service call back function
 bool stop_motor(std_srvs::Empty::Request &req, std_srvs::Empty::Response &res)
 {
+	should_start = false;
+
 	char cmd[] = "LSTOPH";
+
 	if ( g_uart_port != -1) {
 		write(g_uart_port, cmd, 6);
+		ROS_INFO("Stop motor");
 		return true;
 	}
+
+	if ( g_tcp_socket != -1) {
+		if ( send(g_tcp_socket, cmd, 6, 0) != 6)
+		{
+			ROS_ERROR("Stop motor, send tcp error");
+			return false;
+		}
+		ROS_INFO("Stop motor");
+		return true;
+	}
+
 
 	if (g_udp_socket != -1) 
 	{
@@ -607,15 +637,28 @@ bool stop_motor(std_srvs::Empty::Request &req, std_srvs::Empty::Response &res)
 		ROS_INFO("Stop motor");
 		return true;
 	}
+
 	return false;
 }
 
 // service call back function
 bool start_motor(std_srvs::Empty::Request &req, std_srvs::Empty::Response &res)
 {
+	should_start = true;
+
 	char cmd[] = "LSTARH";
 	if ( g_uart_port != -1) {
 		write(g_uart_port, cmd, 6);
+		ROS_INFO("Start motor");
+		return true;
+	}
+
+	if ( g_tcp_socket != -1) {
+		if ( send(g_tcp_socket, cmd, 6, 0) != 6) {
+			ROS_ERROR("start motor, send tcp error");
+			return false;
+		}
+		ROS_INFO("Start motor");
 		return true;
 	}
 
@@ -1133,6 +1176,13 @@ int main(int argc, char **argv)
 		       	}
 			fd_tcp = sock;
 			ROS_INFO("connect (%s:%d) ok", dev_ip.c_str(), tcp_port);
+			g_tcp_socket = fd_tcp;
+
+			if (should_start) 
+			{
+				send(sock, "LSTARH", 6, 0);
+				ROS_INFO("resume detect");
+		       	}
 		}
 
 		fd_set fds;
@@ -1164,14 +1214,15 @@ int main(int argc, char **argv)
 
 		if (ret == 0) 
 		{
-			ROS_ERROR("read data timeout");
-			if (fd_tcp > 0) { close(fd_tcp); fd_tcp = -1; }
+			if (should_start)
+			       	ROS_ERROR("read data timeout");
+			if (fd_tcp > 0) { close(fd_tcp); fd_tcp = -1; g_tcp_socket = -1;}
 			continue;
 		}
 		
 		if (ret < 0) {
 			ROS_ERROR("select error");
-			if (fd_tcp > 0) { close(fd_tcp); fd_tcp = -1; }
+			if (fd_tcp > 0) { close(fd_tcp); fd_tcp = -1; g_tcp_socket = -1; }
 			if (fd_uart > 0) { close(fd_uart); fd_uart = g_uart_port = -1; }
 			continue;
 		}
@@ -1231,6 +1282,7 @@ int main(int argc, char **argv)
 				ROS_ERROR("tcp error");
 				close(fd_tcp);
 				fd_tcp = -1;
+				g_tcp_socket = -1;
 				continue;
 			}
 
