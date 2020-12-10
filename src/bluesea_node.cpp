@@ -783,7 +783,9 @@ void pack_fan_data(const RawData& dat, sensor_msgs::LaserScan& msg)
 
 	for (int j=0; j<dat.N; j++) 
 	{
-		msg.ranges[j] = dat.distance[j]/1000.0 ; 
+		int d = dat.distance[j];
+		msg.ranges[j] = d > 0 ? d /1000.0 : std::numeric_limits<float>::infinity();
+            
 		msg.intensities[j] = dat.confidence[j];
 	} 
 }
@@ -821,7 +823,9 @@ bool pack_fan_data(const RawData& dat, sensor_msgs::LaserScan& msg, double min_a
 				msg.angle_min = dat.angles[j];
 		}
 		
-		msg.ranges[idx] = dat.distance[j]/1000.0 ; 
+		int d = dat.distance[j];
+		msg.ranges[idx] = d > 0 ? d/1000.0 : std::numeric_limits<float>::infinity();
+
 		msg.intensities[idx] = dat.confidence[j];
 		idx++;
 	} 
@@ -867,7 +871,9 @@ bool pack_all_data_within(int N, RawData* dat360, sensor_msgs::LaserScan& msg, d
 	msg.ranges.resize(count);
 
 	for (int i=0; i<count; i++) {
-		msg.ranges[i] = points[i].distance /1000.0 ; 
+		int d = points[i].distance;
+		msg.ranges[i] = d > 0 ? d/1000.0 : std::numeric_limits<float>::infinity();
+
 		msg.intensities[i] = 1 + points[i].intensity;
 	}
 
@@ -897,7 +903,10 @@ bool pack_all_data(int N, RawData* dat360, sensor_msgs::LaserScan& msg, int from
 	{
 		for (int i=0; i<dat360[j].N; i++) 
 		{
-			msg.ranges[N] = dat360[j].distance[i]/1000.0 ; 
+			int d = dat360[j].distance[i];
+
+			msg.ranges[N] = d > 0 ? d /1000.0 : std::numeric_limits<float>::infinity();
+
 			msg.intensities[N] = dat360[j].confidence[i];
 			N++;
 		}
@@ -911,7 +920,9 @@ bool pack_all_data(int N, RawData* dat360, sensor_msgs::LaserScan& msg, int from
 		int cnt = dat360[ id ].N;
 		for (int i=0; i<cnt; i++) 
 		{
-			msg.ranges[N] = dat360[id].distance[cnt-1-i] /1000.0 ; 
+			int d = dat360[id].distance[cnt-1-i];
+			msg.ranges[N] = d > 0 ? d /1000.0 : std::numeric_limits<float>::infinity();
+
 			msg.intensities[N] = 1 + dat360[id].confidence[cnt-1-i];
 			N++;
 		}
@@ -1083,6 +1094,7 @@ int main(int argc, char **argv)
 
 	bool should_publish = false;
 
+	int tcp_idle = 0;
 	while (ros::ok()) 
 	{ 
 		ros::spinOnce();
@@ -1208,16 +1220,31 @@ int main(int argc, char **argv)
 		}
 		
 		
-		struct timeval to = { 5, 1 };
+		struct timeval to = { 1, 1 };
 
 	       	int ret = select(fd_max+1, &fds, NULL, NULL, &to); 
 
 		if (ret == 0) 
 		{
-			if (should_start)
-			       	ROS_ERROR("read data timeout");
-			if (fd_tcp > 0) { close(fd_tcp); fd_tcp = -1; g_tcp_socket = -1;}
-			continue;
+			if (fd_tcp > 0) 
+			{
+				tcp_idle++;
+
+				if (!should_start)
+				{
+					if ( send(fd_tcp, "LBEATH", 6, 0) != 6) 
+					{
+						close(fd_tcp); fd_tcp = -1; g_tcp_socket = -1;
+						continue;
+					}
+				}
+				
+				if (tcp_idle > 5)
+				{ 
+					close(fd_tcp); fd_tcp = -1; g_tcp_socket = -1;
+					ROS_ERROR("tcp timeout"); 
+			       	}
+			}
 		}
 		
 		if (ret < 0) {
@@ -1277,6 +1304,7 @@ int main(int argc, char **argv)
 		// read TCP data
 		if (fd_tcp > 0 && FD_ISSET(fd_tcp, &fds)) 
 		{
+			tcp_idle = 0;
 			int nr = recv(fd_tcp,  buf+buf_len, BUF_SIZE - buf_len, 0);
 			if (nr <= 0) {
 				ROS_ERROR("tcp error");
