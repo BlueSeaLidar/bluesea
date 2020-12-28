@@ -39,6 +39,7 @@
 #include <sys/ioctl.h>
 #include <fcntl.h>
 #include <unistd.h> 
+#include <signal.h>
 
 extern "C" int change_baud(int fd, int baud);
 
@@ -61,7 +62,7 @@ struct RawData
 };
 
 #define HDR_SIZE 6
-#define BUF_SIZE 512*1024
+#define BUF_SIZE 8*1024
 
 struct CmdHeader
 {
@@ -286,8 +287,8 @@ int open_serial_port(const char* port, int baudrate)
 	/* disable software flow control */
 	attrs.c_iflag &= ~(IXON | IXOFF | IXANY);
 
-//	attrs.c_cc[VMIN] = 0;
-//	attrs.c_cc[VTIME] = 10;
+	attrs.c_cc[VMIN] = 0;
+	attrs.c_cc[VTIME] = 0;
 
 	/* flush driver buf */
 	tcflush(fd, TCIFLUSH);
@@ -974,6 +975,7 @@ void resample(RawData& dat, int NN)
 	delete errs;
 }
 
+
 int main(int argc, char **argv)
 {
 	ros::init(argc, argv, "bluesea_laser_publisher");
@@ -1166,6 +1168,8 @@ int main(int argc, char **argv)
 
 		if (type == "tcp" && fd_tcp < 0) 
 		{
+			signal(SIGPIPE, SIG_IGN);
+
 			// open TCP port
 			int sock = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
 			if (sock < 0) { ROS_ERROR("socket TCP failed"); return 0; }
@@ -1290,7 +1294,9 @@ int main(int argc, char **argv)
 		// read UART data
 		if (fd_uart > 0 && FD_ISSET(fd_uart, &fds)) 
 		{
-			int nr = read(fd_uart, buf+buf_len, BUF_SIZE - buf_len);
+			int to_read = BUF_SIZE - buf_len;
+			if (to_read > 256) to_read = 256;
+			int nr = read(fd_uart, buf+buf_len, to_read); 
 			if (nr <= 0) {
 				ROS_ERROR("read port %d error %d", buf_len, nr);
 				close(fd_uart);
