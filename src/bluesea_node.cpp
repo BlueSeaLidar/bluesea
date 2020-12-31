@@ -1413,7 +1413,7 @@ int main(int argc, char **argv)
 					msg.header.frame_id = frame_id;
 
 					msg.range_min = 0.; 
-					msg.range_max = 100;//max_distance;//8.0; 
+					msg.range_max = max_dist;//8.0; 
 
 					double scan_time = 1/100.;
 					msg.scan_time = scan_time;
@@ -1524,7 +1524,7 @@ int main(int argc, char **argv)
 				msg.angle_increment = M_PI*2 / N;
 
 				msg.range_min = 0.; 
-				msg.range_max = 100;//max_distance;//8.0; 
+				msg.range_max = max_dist;//8.0; 
 
 				if (with_angle_filter != 0)
 				{
