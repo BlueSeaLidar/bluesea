@@ -773,7 +773,7 @@ int reopen_uart(std::string& port, int baud_rate, int& unit_is_mm, int& with_con
 }
 
 
-void pack_fan_data(const RawData& dat, sensor_msgs::LaserScan& msg)
+void pack_fan_data(const RawData& dat, sensor_msgs::LaserScan& msg, double max_dist)
 {
 	msg.angle_min = dat.angle * M_PI/1800; 
 	msg.angle_max = (dat.angle+360) * M_PI/1800; 
@@ -784,15 +784,19 @@ void pack_fan_data(const RawData& dat, sensor_msgs::LaserScan& msg)
 
 	for (int j=0; j<dat.N; j++) 
 	{
-		int d = dat.distance[j];
-		msg.ranges[j] = d > 0 ? d /1000.0 : std::numeric_limits<float>::infinity();
-            
+		double d = dat.distance[j] / 1000.0;
+
+		if (dat.distance[j] == 0 || d > max_dist) 
+			msg.ranges[j] = std::numeric_limits<float>::infinity();
+		else 
+			msg.ranges[j] = d;
+
 		msg.intensities[j] = dat.confidence[j];
 	} 
 }
 
 
-bool pack_fan_data(const RawData& dat, sensor_msgs::LaserScan& msg, double min_angle, double max_angle)
+bool pack_fan_data(const RawData& dat, sensor_msgs::LaserScan& msg, double min_angle, double max_angle, double max_dist)
 {
 	int count = 0;
 	for (int i=0; i<dat.N; i++) 
@@ -824,8 +828,16 @@ bool pack_fan_data(const RawData& dat, sensor_msgs::LaserScan& msg, double min_a
 				msg.angle_min = dat.angles[j];
 		}
 		
-		int d = dat.distance[j];
-		msg.ranges[idx] = d > 0 ? d/1000.0 : std::numeric_limits<float>::infinity();
+
+		//int d = dat.distance[j];
+		//msg.ranges[idx] = d > 0 ? d/1000.0 : std::numeric_limits<float>::infinity();
+		
+		double d = dat.distance[j] / 1000.0;
+		if (dat.distance[j] == 0 || d > max_dist) 
+			msg.ranges[idx] = std::numeric_limits<float>::infinity();
+		else 
+			msg.ranges[idx] = d;
+
 
 		msg.intensities[idx] = dat.confidence[j];
 		idx++;
@@ -834,7 +846,7 @@ bool pack_fan_data(const RawData& dat, sensor_msgs::LaserScan& msg, double min_a
 	return true;
 }
 
-bool pack_all_data_within(int N, RawData* dat360, sensor_msgs::LaserScan& msg, double min_angle, double max_angle)
+bool pack_all_data_within(int N, RawData* dat360, sensor_msgs::LaserScan& msg, double min_angle, double max_angle, double max_dist)
 {
 	RosPoint* points = new RosPoint[N+1];
        	if (!points) {
@@ -872,8 +884,14 @@ bool pack_all_data_within(int N, RawData* dat360, sensor_msgs::LaserScan& msg, d
 	msg.ranges.resize(count);
 
 	for (int i=0; i<count; i++) {
-		int d = points[i].distance;
-		msg.ranges[i] = d > 0 ? d/1000.0 : std::numeric_limits<float>::infinity();
+		//int d = points[i].distance;
+		//msg.ranges[i] = d > 0 ? d/1000.0 : std::numeric_limits<float>::infinity();
+		double d = points[i].distance / 1000.0;
+		if (points[i].distance == 0 || d > max_dist) 
+			msg.ranges[i] = std::numeric_limits<float>::infinity();
+		else 
+			msg.ranges[i] = d;
+
 
 		msg.intensities[i] = 1 + points[i].intensity;
 	}
@@ -885,7 +903,7 @@ bool pack_all_data_within(int N, RawData* dat360, sensor_msgs::LaserScan& msg, d
 	return true;
 }
 
-bool pack_all_data(int N, RawData* dat360, sensor_msgs::LaserScan& msg, int from_zero, int mirror)
+bool pack_all_data(int N, RawData* dat360, sensor_msgs::LaserScan& msg, int from_zero, int mirror, double max_dist)
 {
 	if (from_zero == 0) {
 		msg.angle_min = 0; 
@@ -904,9 +922,14 @@ bool pack_all_data(int N, RawData* dat360, sensor_msgs::LaserScan& msg, int from
 	{
 		for (int i=0; i<dat360[j].N; i++) 
 		{
-			int d = dat360[j].distance[i];
-
-			msg.ranges[N] = d > 0 ? d /1000.0 : std::numeric_limits<float>::infinity();
+			//int d = dat360[j].distance[i];
+			//msg.ranges[N] = d > 0 ? d /1000.0 : std::numeric_limits<float>::infinity();
+			
+			double d = dat360[j].distance[i]/1000.0;
+			if (dat360[j].distance[i] == 0 || d > max_dist) 
+				msg.ranges[N] = std::numeric_limits<float>::infinity();
+			else
+				msg.ranges[N] = d;
 
 			msg.intensities[N] = dat360[j].confidence[i];
 			N++;
@@ -921,8 +944,14 @@ bool pack_all_data(int N, RawData* dat360, sensor_msgs::LaserScan& msg, int from
 		int cnt = dat360[ id ].N;
 		for (int i=0; i<cnt; i++) 
 		{
-			int d = dat360[id].distance[cnt-1-i];
-			msg.ranges[N] = d > 0 ? d /1000.0 : std::numeric_limits<float>::infinity();
+			//int d = dat360[id].distance[cnt-1-i];
+			//msg.ranges[N] = d > 0 ? d /1000.0 : std::numeric_limits<float>::infinity();
+			
+			double d = dat360[id].distance[cnt-1-i] / 1000.0;
+			if (dat360[id].distance[cnt-1-i] == 0 || d > max_dist)
+				msg.ranges[N] = std::numeric_limits<float>::infinity();
+			else
+				msg.ranges[N] = d;
 
 			msg.intensities[N] = 1 + dat360[id].confidence[cnt-1-i];
 			N++;
@@ -1035,6 +1064,10 @@ int main(int argc, char **argv)
 	priv_nh.param("with_angle_filter", with_angle_filter, 0); // 1: enable angle filter, 0: diable
 	priv_nh.param("min_angle", min_angle, -M_PI); // angle filter's low threshold, default value: -pi
        	priv_nh.param("max_angle", max_angle, M_PI); // angle filters' up threashold, default value: pi
+
+	// range limitation
+	double max_dist;
+       	priv_nh.param("max_dist", max_dist, 9999.0); // max detection range, default value: 9999M
 
 	// frame information
        	std::string frame_id;
@@ -1390,10 +1423,10 @@ int main(int argc, char **argv)
 
 					if (with_angle_filter == 0) 
 					{
-						pack_fan_data(dat, msg);
+						pack_fan_data(dat, msg, max_dist);
 						laser_pub.publish(msg); 
 					}
-					else if (pack_fan_data(dat, msg, min_angle, max_angle))
+					else if (pack_fan_data(dat, msg, min_angle, max_angle, max_dist))
 					{
 						laser_pub.publish(msg); 
 					}
@@ -1495,10 +1528,10 @@ int main(int argc, char **argv)
 
 				if (with_angle_filter != 0)
 				{
-					if (pack_all_data_within(N, dat360, msg, min_angle, max_angle)) 
+					if (pack_all_data_within(N, dat360, msg, min_angle, max_angle, max_dist)) 
 						laser_pub.publish(msg); 
 				} else {
-					if (pack_all_data(N, dat360, msg, from_zero, mirror)) 
+					if (pack_all_data(N, dat360, msg, from_zero, mirror, max_dist)) 
 						laser_pub.publish(msg); 
 				}
 
