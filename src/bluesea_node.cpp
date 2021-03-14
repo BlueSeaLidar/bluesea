@@ -676,7 +676,7 @@ bool start_motor(std_srvs::Empty::Request &req, std_srvs::Empty::Response &res)
 
 int quirk_talk(int fd, int n, const char* cmd, 
 		int nhdr, const char* hdr_str, 
-		int nfetch, char* fetch)
+		int nfetch, char* fetch, int* nget)
 {
 	ROS_INFO("send command : \'%s\'", cmd);
 	write(fd, cmd, n);
@@ -684,6 +684,7 @@ int quirk_talk(int fd, int n, const char* cmd,
 	char buf[4096];
 
 	int nr = read(fd, buf, sizeof(buf));
+	if (nr < 0) nr = 0;
 
 	for (int i=0; i<10 && nr < (int)sizeof(buf); i++)
 	{
@@ -703,6 +704,7 @@ int quirk_talk(int fd, int n, const char* cmd,
 			return 0;
 		}
 	}
+	*nget = nr;
 
 
 	char path[256];
@@ -1108,7 +1110,7 @@ int main(int argc, char **argv)
 		rt = send_cmd_udp(fd_udp, dev_ip.c_str(), udp_port, 0x0043, rand(), 6, cmd);
 
 	} 
-	
+
 	ros::Publisher laser_pub = n.advertise<sensor_msgs::LaserScan>("scan", 50);
 	ros::Publisher cloud_pub = n.advertise<sensor_msgs::PointCloud>("cloud", 50);
    
@@ -1129,7 +1131,7 @@ int main(int argc, char **argv)
 
 	bool should_publish = false;
 
-	int tcp_idle = 0;
+	int tcp_idle = 0, uart_idle = 0;
 	while (ros::ok()) 
 	{ 
 		ros::spinOnce();
@@ -1168,35 +1170,46 @@ int main(int argc, char **argv)
 
 			//read device's UUID 
 			char buf[32];
+			int nread = 0;
 			for (int i=0; i<10; i++)
 			{
-				if (quirk_talk(fd_uart, 6, "LUUIDH", 12, "PRODUCT SN: ", 9, g_uuid) == 0)
+				int nr = 0;
+				if (quirk_talk(fd_uart, 6, "LUUIDH", 12, "PRODUCT SN: ", 9, g_uuid, &nr) == 0)
 				{
+					nread += nr;
 					ROS_INFO("get product SN : \'%s\'", g_uuid);
 					break;
 				}
+				nread += nr;
 			}
 
 			// setup output data format
-			for (int i=0; i<10; i++) 
+			for (int i=0; i<5; i++) 
 			{
+				int nr = 0;
 				if (quirk_talk(fd_uart, 6, unit_is_mm == 0 ? "LMDCMH" : "LMDMMH", 
-							10, "SET LiDAR ", 9, buf) == 0)
+							10, "SET LiDAR ", 9, buf, &nr) == 0)
 				{
+					nread += nr;
 					ROS_INFO("set LiDAR unit to %s", buf);
 					break;
 				}
+				nread += nr;
 			}
 
 			// enable/disable output intensity
-			for (int i=0; i<10; i++) {
+			for (int i=0; i<5; i++) {
+				int nr = 0;
 				if (quirk_talk(fd_uart, 6, with_confidence == 0 ? "LNCONH" : "LOCONH", 
-							6, "LiDAR ", 5, buf) == 0)
+							6, "LiDAR ", 5, buf, &nr) == 0)
 				{
+					nread += nr;
 					ROS_INFO("set LiDAR confidence to %s", buf);
 					break;
 				}
+				nread += nr;
 			}
+			if (nread == 0) break;
 		}
 
 		if (type == "tcp" && fd_tcp < 0) 
@@ -1282,12 +1295,27 @@ int main(int argc, char **argv)
 					ROS_ERROR("tcp timeout"); 
 			       	}
 			}
+
+			if (fd_uart > 0) 
+			{
+				if (should_start) 
+				{
+					if ( uart_idle++ > 5) {
+						ROS_ERROR("uart timeout");
+						close(fd_uart); fd_uart = g_uart_port = -1; 
+						break; // 
+					}
+				}
+			}
 		}
 		
 		if (ret < 0) {
 			ROS_ERROR("select error");
 			if (fd_tcp > 0) { close(fd_tcp); fd_tcp = -1; g_tcp_socket = -1; }
-			if (fd_uart > 0) { close(fd_uart); fd_uart = g_uart_port = -1; }
+			if (fd_uart > 0) {
+			       	close(fd_uart); fd_uart = g_uart_port = -1; 
+				break; // 
+			}
 			continue;
 		}
 
@@ -1327,6 +1355,7 @@ int main(int argc, char **argv)
 		// read UART data
 		if (fd_uart > 0 && FD_ISSET(fd_uart, &fds)) 
 		{
+			uart_idle = 0;
 			int to_read = BUF_SIZE - buf_len;
 			if (to_read > 256) to_read = 256;
 			int nr = read(fd_uart, buf+buf_len, to_read); 
@@ -1334,6 +1363,7 @@ int main(int argc, char **argv)
 				ROS_ERROR("read port %d error %d", buf_len, nr);
 				close(fd_uart);
 				fd_uart = g_uart_port = -1;
+				break;
 				continue;
 			}
 			//if (nr == 0) continue;
@@ -1542,6 +1572,9 @@ int main(int argc, char **argv)
 		}
 
 	}
+
+					
+	ROS_ERROR("lidar node quit");
 
 	//close(fd);
        	return 0;
