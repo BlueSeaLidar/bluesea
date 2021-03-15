@@ -695,6 +695,7 @@ int quirk_talk(int fd, int n, const char* cmd,
 			ros::Duration(0.1).sleep();
 	}
 
+	*nget = nr;
 	for (int i=0; i<nr-nhdr-nfetch; i++) 
 	{
 		if (memcmp(buf+i, hdr_str, nhdr) == 0) 
@@ -704,7 +705,6 @@ int quirk_talk(int fd, int n, const char* cmd,
 			return 0;
 		}
 	}
-	*nget = nr;
 
 
 	char path[256];
