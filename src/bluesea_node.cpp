@@ -1171,7 +1171,7 @@ int main(int argc, char **argv)
 			//read device's UUID 
 			char buf[32];
 			int nread = 0;
-			for (int i=0; i<10; i++)
+			for (int i=0; i<5; i++)
 			{
 				int nr = 0;
 				if (quirk_talk(fd_uart, 6, "LUUIDH", 12, "PRODUCT SN: ", 9, g_uuid, &nr) == 0)
@@ -1181,6 +1181,11 @@ int main(int argc, char **argv)
 					break;
 				}
 				nread += nr;
+			}
+			if (nread == 0) {
+				close(fd_uart); fd_uart = g_uart_port = -1; 
+				continue;
+			       	//break;
 			}
 
 			// setup output data format
@@ -1209,7 +1214,6 @@ int main(int argc, char **argv)
 				}
 				nread += nr;
 			}
-			if (nread == 0) break;
 		}
 
 		if (type == "tcp" && fd_tcp < 0) 
@@ -1303,7 +1307,7 @@ int main(int argc, char **argv)
 					if ( uart_idle++ > 5) {
 						ROS_ERROR("uart timeout");
 						close(fd_uart); fd_uart = g_uart_port = -1; 
-						break; // 
+						continue;// break; // 
 					}
 				}
 			}
@@ -1314,7 +1318,7 @@ int main(int argc, char **argv)
 			if (fd_tcp > 0) { close(fd_tcp); fd_tcp = -1; g_tcp_socket = -1; }
 			if (fd_uart > 0) {
 			       	close(fd_uart); fd_uart = g_uart_port = -1; 
-				break; // 
+				// break; // 
 			}
 			continue;
 		}
@@ -1363,7 +1367,7 @@ int main(int argc, char **argv)
 				ROS_ERROR("read port %d error %d", buf_len, nr);
 				close(fd_uart);
 				fd_uart = g_uart_port = -1;
-				break;
+				//break;
 				continue;
 			}
 			//if (nr == 0) continue;
